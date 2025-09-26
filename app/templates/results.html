@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h2>
+  Resultados — {{ season }}
+  {% if division %} — {{ division }}{% endif %}
+</h2>
+
+<form method="get" action="/results" style="margin-bottom:12px; display:flex; gap:12px; flex-wrap:wrap;">
+  <label>Temporada:
+    <select name="season" onchange="this.form.submit()">
+      {% for s in seasons %}
+        <option value="{{ s }}" {% if season==s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>División:
+    <select name="division" onchange="this.form.submit()">
+      <option value="">(todas)</option>
+      {% for d in divisions %}
+        <option value="{{ d }}" {% if division==d %}selected{% endif %}>{{ d }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <noscript><button type="submit">Ver</button></noscript>
+</form>
+
+{% if rows and rows|length > 0 %}
+<div class="table-outer">
+  <table class="grid">
+    <!-- 14 columnas: Fecha, Div, J1, J2, S1..S5 (2 columnas por set), Marcador sets, Ganador -->
+    <colgroup>
+      <col class="col-num" style="width:110px"><!-- Fecha -->
+      <col class="col-num" style="width:110px"><!-- División -->
+      <col class="col-name" style="width:220px"><!-- J1 -->
+      <col class="col-name" style="width:220px"><!-- J2 -->
+      <!-- 10 columnas de sets -->
+      {% for i in range(10) %}
+      <col class="col-num" style="width:70px">
+      {% endfor %}
+      <col class="col-num" style="width:90px"><!-- Marcador -->
+      <col class="col-name" style="width:200px"><!-- Ganador -->
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Fecha</th>
+        <th>Div</th>
+        <th>J1</th>
+        <th>J2</th>
+        <th>S1-J1</th><th>S1-J2</th>
+        <th>S2-J1</th><th>S2-J2</th>
+        <th>S3-J1</th><th>S3-J2</th>
+        <th>S4-J1</th><th>S4-J2</th>
+        <th>S5-J1</th><th>S5-J2</th>
+        <th>Sets</th>
+        <th>Ganador</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.date }}</td>
+        <td>{{ r.division }}</td>
+        <td>{{ r.j1 }}</td>
+        <td>{{ r.j2 }}</td>
+        <td><strong>{{ r.sets_score }}</strong></td>
+        <td>{{ r.s1j1 }}</td><td>{{ r.s1j2 }}</td>
+        <td>{{ r.s2j1 }}</td><td>{{ r.s2j2 }}</td>
+        <td>{{ r.s3j1 }}</td><td>{{ r.s3j2 }}</td>
+        <td>{{ r.s4j1 }}</td><td>{{ r.s4j2 }}</td>
+        <td>{{ r.s5j1 }}</td><td>{{ r.s5j2 }}</td>
+        <td>{{ r.winner }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p>No hay resultados para este filtro.</p>
+{% endif %}
+
+{% endblock %}

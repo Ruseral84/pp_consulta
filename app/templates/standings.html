@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h2>
+  Clasificación
+  {% if season %}— {{ season }}{% else %}(General histórica){% endif %}
+  {% if division %} — {{ division }}{% endif %}
+</h2>
+
+<form method="get" action="/standings" style="margin-bottom:12px; display:flex; gap:12px; flex-wrap:wrap;">
+  <label>Temporada:
+    <select name="season" onchange="this.form.submit()">
+      <option value="">(General)</option>
+      {% for s in seasons %}
+        <option value="{{ s }}" {% if season==s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  {% if season %}
+  <label>División:
+    <select name="division" onchange="this.form.submit()">
+      {% for d in divisions %}
+        <option value="{{ d }}" {% if division==d %}selected{% endif %}>{{ d }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% endif %}
+  <noscript><button type="submit">Ver</button></noscript>
+</form>
+
+{% if rows %}
+<div class="table-outer">
+  <table class="grid">
+    {% if not season %}
+      <!-- GENERAL: #, Jugador, V, Sets+, Puntos+, Ptos Total -->
+      <colgroup>
+        <col class="col-rank"><col class="col-name">
+        <col class="col-num"><col class="col-num"><col class="col-num"><col class="col-num">
+      </colgroup>
+      <thead><tr>
+        <th>#</th><th>Jugador</th><th>V</th><th>Sets +</th><th>Puntos +</th><th>Ptos Total</th>
+      </tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ r.player }}</td>
+          <td>{{ r.wins }}</td>
+          <td>{{ r.sets_for }}</td>
+          <td>{{ r.points_for }}</td>
+          <td><strong>{{ r.award_points }}</strong></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+
+    {% else %}
+      <!-- TEMPORADA/DIVISIÓN: #, Jugador, PJ, V, Sets+, Sets−, Puntos+, Puntos− -->
+      <colgroup>
+        <col class="col-rank"><col class="col-name">
+        <col class="col-num"><col class="col-num"><col class="col-num"><col class="col-num"><col class="col-num"><col class="col-num">
+      </colgroup>
+      <thead><tr>
+        <th>#</th><th>Jugador</th><th>PJ</th><th>V</th><th>Sets +</th><th>Sets −</th><th>Puntos +</th><th>Puntos −</th>
+      </tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ r.player }}</td>
+          <td>{{ r.played }}</td>
+          <td>{{ r.wins }}</td>
+          <td>{{ r.sets_for }}</td>
+          <td>{{ r.sets_against }}</td>
+          <td>{{ r.points_for }}</td>
+          <td>{{ r.points_against }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    {% endif %}
+  </table>
+</div>
+{% else %}
+<p>No hay datos para este filtro.</p>
+{% endif %}
+
+
+
+<script>
+  const seasonSel = document.querySelector('select[name="season"]');
+  if (seasonSel) {
+    seasonSel.addEventListener('change', () => {
+      if (seasonSel.value === '') {
+        // al volver a general, limpia la división de la URL
+        const url = new URL(window.location);
+        url.searchParams.set('season','');
+        url.searchParams.delete('division');
+        window.location = url.toString();
+      }
+    });
+  }
+</script>
+
+{% endblock %}
+

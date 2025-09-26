@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>LIGA PING PONG AT3W</title>
+  <link rel="stylesheet" href="/static/styles.css?v=5">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+  <header class="brand">
+    <div class="brand-left">
+      <img src="/static/logo_at3w.png" alt="AT3W" class="brand-logo">
+      <h1>LIGA PING PONG AT3W</h1>
+    </div>
+    <nav>
+      <a href="/standings">Clasificación</a>
+      <a href="/results">Resultados</a>
+      <a href="/reload" title="Recargar Excel">Recargar</a>
+    </nav>
+  </header>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>
+    <small>Generado desde Excel (JUGADORES/RESULTADOS) en la carpeta raíz.</small>
+  </footer>
+</body>
+</html>
