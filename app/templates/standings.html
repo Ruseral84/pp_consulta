@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
 
-<h2>
+<h2 style="margin:6px 0 12px;">
   Clasificación
   {% if season %}— {{ season }}{% else %}(General histórica){% endif %}
   {% if division %} — {{ division }}{% endif %}
 </h2>
 
-<form method="get" action="/standings" style="margin-bottom:12px; display:flex; gap:12px; flex-wrap:wrap;">
+<form method="get" action="/standings" style="margin-bottom:12px; display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
   <label>Temporada:
     <select name="season" onchange="this.form.submit()">
-      <option value="">(General)</option>
+      <option value="(General)" {% if not season %}selected{% endif %}>(General)</option>
       {% for s in seasons %}
         <option value="{{ s }}" {% if season==s %}selected{% endif %}>{{ s }}</option>
       {% endfor %}
@@ -29,40 +29,66 @@
   <noscript><button type="submit">Ver</button></noscript>
 </form>
 
-{% if rows %}
+{% if rows and rows|length>0 %}
 <div class="table-outer">
   <table class="grid">
     {% if not season %}
-      <!-- GENERAL: #, Jugador, V, Sets+, Puntos+, Ptos Total -->
+      <!-- GENERAL HISTÓRICA: #, Jugador, Puntos (liga), V, Sets+, Puntos+ -->
       <colgroup>
-        <col class="col-rank"><col class="col-name">
-        <col class="col-num"><col class="col-num"><col class="col-num"><col class="col-num">
+        <col class="col-rank">
+        <col class="col-name">
+        <col class="col-num">
+        <col class="col-num">
+        <col class="col-num">
+        <col class="col-num">
       </colgroup>
-      <thead><tr>
-        <th>#</th><th>Jugador</th><th>V</th><th>Sets +</th><th>Puntos +</th><th>Ptos Total</th>
-      </tr></thead>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Jugador</th>
+          <th>Puntos</th>
+          <th>V</th>
+          <th>Sets +</th>
+          <th>Puntos +</th>
+        </tr>
+      </thead>
       <tbody>
         {% for r in rows %}
         <tr>
           <td>{{ loop.index }}</td>
           <td>{{ r.player }}</td>
-          <td>{{ r.wins }}</td>
-          <td>{{ r.sets_for }}</td>
-          <td>{{ r.points_for }}</td>
-          <td><strong>{{ r.award_points }}</strong></td>
+          <td><strong>{{ r.award_points|default(0) }}</strong></td>
+          <td>{{ r.wins|default(0) }}</td>
+          <td>{{ r.sets_for|default(0) }}</td>
+          <td>{{ r.points_for|default(0) }}</td>
         </tr>
         {% endfor %}
       </tbody>
 
     {% else %}
-      <!-- TEMPORADA/DIVISIÓN: #, Jugador, PJ, V, Sets+, Sets−, Puntos+, Puntos− -->
+      <!-- POR TEMPORADA/DIVISIÓN: #, Jugador, PJ, V, Sets+, Sets−, Puntos+, Puntos− -->
       <colgroup>
-        <col class="col-rank"><col class="col-name">
-        <col class="col-num"><col class="col-num"><col class="col-num"><col class="col-num"><col class="col-num"><col class="col-num">
+        <col class="col-rank">
+        <col class="col-name">
+        <col class="col-num"><!-- PJ -->
+        <col class="col-num"><!-- V -->
+        <col class="col-num"><!-- Sets+ -->
+        <col class="col-num"><!-- Sets- -->
+        <col class="col-num"><!-- Puntos+ -->
+        <col class="col-num"><!-- Puntos- -->
       </colgroup>
-      <thead><tr>
-        <th>#</th><th>Jugador</th><th>PJ</th><th>V</th><th>Sets +</th><th>Sets −</th><th>Puntos +</th><th>Puntos −</th>
-      </tr></thead>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Jugador</th>
+          <th>PJ</th>
+          <th>V</th>
+          <th>Sets +</th>
+          <th>Sets −</th>
+          <th>Puntos +</th>
+          <th>Puntos −</th>
+        </tr>
+      </thead>
       <tbody>
         {% for r in rows %}
         <tr>
@@ -84,16 +110,14 @@
 <p>No hay datos para este filtro.</p>
 {% endif %}
 
-
-
 <script>
+  // Al volver a la general, limpiamos división de la URL
   const seasonSel = document.querySelector('select[name="season"]');
   if (seasonSel) {
     seasonSel.addEventListener('change', () => {
-      if (seasonSel.value === '') {
-        // al volver a general, limpia la división de la URL
+      if (seasonSel.value === '(General)') {
         const url = new URL(window.location);
-        url.searchParams.set('season','');
+        url.searchParams.set('season','(General)');
         url.searchParams.delete('division');
         window.location = url.toString();
       }
@@ -102,4 +126,3 @@
 </script>
 
 {% endblock %}
-

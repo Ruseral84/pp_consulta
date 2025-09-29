@@ -1,74 +1,72 @@
+from pathlib import Path
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .parser import LeagueData
+from .parser import LeagueData, project_root_from_this_file
+
+BASE_DIR = project_root_from_this_file(__file__)
+APP_DIR = Path(__file__).resolve().parent
+TEMPLATES_DIR = APP_DIR / "templates"
+STATIC_DIR = APP_DIR / "static"
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-templates = Jinja2Templates(directory="app/templates")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-LEAGUE = LeagueData()
+# Carga todo al arrancar
+LEAGUE = LeagueData(BASE_DIR)
 
-@app.on_event("startup")
-def _startup():
-    # Lee todos los pares JUGADORES/RESULTADOS de la carpeta raíz
-    LEAGUE.load_from_root_excels(".")
 
-@app.get("/", response_class=HTMLResponse)
-def index():
-    return RedirectResponse("/standings")
+@app.get("/")
+def root():
+    return RedirectResponse(url="/standings")
 
-@app.get("/reload", response_class=HTMLResponse)
-def reload_data():
-    LEAGUE.load_from_root_excels(".")
-    return RedirectResponse("/standings")
 
-@app.get("/standings", response_class=HTMLResponse)
+@app.get("/standings")
 def standings(request: Request, season: str | None = None, division: str | None = None):
-    # Normaliza: si season es "", trátalo como None y borra división residual
-    season = season or None
-    if season is None:
-        division = None
+    seasons = LEAGUE.seasons_list()
 
-    seasons = LEAGUE.seasons_sorted()
-    divisions = LEAGUE.divisions_by_season.get(season, []) if season else []
+    if not season or season == "(General)":
+        rows = LEAGUE.standings_general()
+        ctx = {
+            "request": request,
+            "season": None,
+            "division": None,
+            "divisions": [],
+            "seasons": seasons,
+            "rows": rows,
+        }
+        return templates.TemplateResponse("standings.html", ctx)
 
-    # Si hay temporada pero no división, por defecto División 1
-    if season and not division and divisions:
-        division = divisions[0]
+    # con temporada seleccionada
+    divs = LEAGUE.divisions_for(season)
+    # si no nos pasan división, cojo la primera disponible
+    division = division or (divs[0] if divs else None)
+    rows = LEAGUE.standings_division(season, division) if division else []
 
-    rows = LEAGUE.standings_for(season, division)
-
-    return templates.TemplateResponse("standings.html", {
+    ctx = {
         "request": request,
         "season": season,
         "division": division,
+        "divisions": divs,
         "seasons": seasons,
-        "divisions": divisions,
-        "rows": rows
-    })
+        "rows": rows,
+    }
+    return templates.TemplateResponse("standings.html", ctx)
 
-@app.get("/results", response_class=HTMLResponse)
-def results(request: Request, season: str | None = None, division: str | None = None):
-    seasons = LEAGUE.seasons_sorted()
 
-    # Si no se pasa temporada, toma la más reciente (última)
-    if not season and seasons:
-        season = seasons[-1]
+@app.get("/results")
+def results(request: Request, season: str | None = None):
+    seasons = LEAGUE.seasons_list()
+    season = season or (seasons[0] if seasons else None)
+    rows = LEAGUE.results_for(season) if season else []
 
-    divisions = LEAGUE.divisions_by_season.get(season, []) if season else []
-    rows = LEAGUE.results_for(season, division)
-
-    return templates.TemplateResponse("results.html", {
+    ctx = {
         "request": request,
         "season": season,
-        "division": division,
         "seasons": seasons,
-        "divisions": divisions,
-        "rows": rows
-    })
-
-
-
+        "rows": rows,
+    }
+    return templates.TemplateResponse("results.html", ctx)

@@ -1,30 +1,65 @@
 <!doctype html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>LIGA PING PONG AT3W</title>
-  <link rel="stylesheet" href="/static/styles.css?v=5">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/static/logo.png" />
+  <style>
+    :root {
+      --bg:#0e1117; --bg2:#151a23; --txt:#e6edf3; --muted:#98a2b3;
+      --accent:#fbd38d; --border:#263041;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;background:var(--bg);color:var(--txt);font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto}
+    a{color:var(--txt);text-decoration:none}
+    header{
+      display:flex; align-items:center; gap:.75rem;
+      background:var(--bg2); border-bottom:1px solid var(--border);
+      padding:.6rem 1rem; position:sticky; top:0; z-index:2;
+    }
+    header img{height:22px; width:auto}
+    header nav{margin-left:auto; display:flex; gap:.5rem}
+    header nav a{padding:.35rem .6rem; border:1px solid var(--border); border-radius:.5rem; color:var(--muted)}
+    header nav a.active{color:#111; background:var(--accent); border-color:var(--accent); font-weight:600}
+
+    main{max-width:1200px; margin:1rem auto; padding:0 10px}
+
+    h2{margin:.25rem 0 1rem 0}
+
+    /* tabla compacta y responsive */
+    .table-outer{overflow:auto; border:1px solid var(--border); border-radius:.6rem}
+    table.grid{width:100%; border-collapse:collapse; min-width:760px}
+    table.grid th, table.grid td{
+      border-bottom:1px solid var(--border);
+      padding:.45rem .6rem; text-align:center; white-space:nowrap;
+    }
+    table.grid thead th{background:var(--bg2); position:sticky; top:0}
+    table.grid td.name{ text-align:left; max-width:0; overflow:hidden; text-overflow:ellipsis }
+    /* columnas: nombre algo más ancha, resto estrechas en móvil */
+    col.col-rank{width:40px}
+    col.col-name{width:360px}
+    @media (max-width:720px){
+      table.grid{min-width:640px}
+      col.col-name{width:260px}
+      table.grid th, table.grid td{padding:.4rem .5rem}
+    }
+
+    .foot{color:var(--muted); margin-top:.75rem; font-size:.9em}
+  </style>
 </head>
 <body>
-  <header class="brand">
-    <div class="brand-left">
-      <img src="/static/logo_at3w.png" alt="AT3W" class="brand-logo">
-      <h1>LIGA PING PONG AT3W</h1>
-    </div>
-    <nav>
-      <a href="/standings">Clasificación</a>
-      <a href="/results">Resultados</a>
-      <a href="/reload" title="Recargar Excel">Recargar</a>
-    </nav>
-  </header>
-
-  <main>
-    {% block content %}{% endblock %}
-  </main>
-
-  <footer>
-    <small>Generado desde Excel (JUGADORES/RESULTADOS) en la carpeta raíz.</small>
-  </footer>
+<header>
+  <img src="/static/logo.png" alt="AT3W" />
+  <strong>LIGA PING PONG AT3W</strong>
+  <nav>
+    <a href="/standings" class="{{ 'active' if page=='standings' else '' }}">Clasificación</a>
+    <a href="/results" class="{{ 'active' if page=='results' else '' }}">Resultados</a>
+  </nav>
+</header>
+<main>
+  {% block content %}{% endblock %}
+  <p class="foot">Generado desde Excel (JUGADORES/RESULTADOS) en la carpeta raíz.</p>
+</main>
 </body>
 </html>
