@@ -226,8 +226,19 @@ class LeagueData:
 
     # -------------------- standings y puntos liga -------------------- #
     def _calc_standings_one(self, season: SeasonLabel, division: str) -> List[Tuple[str, PlayerAgg]]:
-        """Stats por jugador en una temporada/división (solo partidos con sets válidos)."""
+        """Stats por jugador en una temporada/división (solo partidos con sets válidos).
+        **Incluye también a los jugadores que aún no han disputado partidos** (PJ=0),
+        para que el listado tenga siempre a todos los del roster.
+        """
         agg: Dict[str, PlayerAgg] = {}
+
+        # 1) Sembrar con todos los jugadores del roster de esa división
+        players_in_div = self.roster.get(season, {}).get(division, [])
+        for p in players_in_div:
+            if p and p not in agg:
+                agg[p] = PlayerAgg()
+
+        # 2) Volcar los partidos con sets válidos
         for m in self.results.get(season, []):
             if m.division != division:
                 continue
