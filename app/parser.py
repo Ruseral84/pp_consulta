@@ -1,368 +1,390 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional
-
-import math
+import os
+from dataclasses import dataclass
+from typing import Dict, List, Tuple, Optional, Any
 import pandas as pd
+from datetime import datetime, timedelta
 
 
-# ------------------------- utilidades de ruta ------------------------- #
-def project_root_from_this_file(this_file: str) -> Path:
-    """Carpeta del repo: .../pp_consulta"""
-    return Path(this_file).resolve().parent.parent
-
-
-def _clean_name(x) -> str:
-    if pd.isna(x):
-        return ""
-    s = str(x).strip()
-    # coladas típicas de excel como 'nan', etc.
-    return "" if s.lower() in {"nan", "none"} else s
-
+# -------------------------
+# Utilidades internas
+# -------------------------
 
 def _is_number(x) -> bool:
     try:
-        # NaN -> False
-        return x == x and isinstance(float(x), (int, float))
+        return pd.notna(x) and str(x).strip() != "" and float(x) == float(x)
     except Exception:
         return False
 
 
-# ----------------------------- datos base ----------------------------- #
-DIV1 = "División 1"
-DIV2 = "División 2"
-DIV3A = "División 3 - A"
-DIV3B = "División 3 - B"
+def _played_row(row: pd.Series) -> bool:
+    """
+    Un partido cuenta como 'jugado' si existe al menos un set con tanteo numérico en ambas columnas.
+    (S1-J1, S1-J2) ó (S2-J1, S2-J2) ... hasta S5.
+    """
+    for j1, j2 in [(4, 5), (6, 7), (8, 9), (10, 11), (12, 13)]:
+        a = row.iloc[j1] if j1 < len(row) else None
+        b = row.iloc[j2] if j2 < len(row) else None
+        if _is_number(a) and _is_number(b):
+            return True
+    return False
 
-SeasonLabel = str  # "Temporada 1", "Temporada 2", ...
+
+def _tally_match(row: pd.Series) -> Optional[Tuple[str, str, int, int, int, int]]:
+    """
+    Devuelve (j1, j2, sets1, sets2, pts1, pts2) SOLO si el partido tiene resultado (jugado).
+    """
+    if not _played_row(row):
+        return None
+
+    j1 = str(row.iloc[2]).strip()
+    j2 = str(row.iloc[3]).strip()
+
+    sets1 = sets2 = pts1 = pts2 = 0
+
+    for j1c, j2c in [(4, 5), (6, 7), (8, 9), (10, 11), (12, 13)]:
+        a = row.iloc[j1c] if j1c < len(row) else None
+        b = row.iloc[j2c] if j2c < len(row) else None
+        if _is_number(a) and _is_number(b):
+            a = int(float(a))
+            b = int(float(b))
+            pts1 += a
+            pts2 += b
+            if a > b:
+                sets1 += 1
+            elif b > a:
+                sets2 += 1
+
+    return j1, j2, sets1, sets2, pts1, pts2
+
+
+def _excel_date_to_str(v: Any) -> str:
+    """
+    Normaliza la fecha a 'YYYY-MM-DD' desde:
+    - pandas.Timestamp / datetime
+    - números Excel (días desde 1899-12-30)
+    - strings con o sin hora (intenta parseo y devuelve solo la fecha)
+    """
+    if isinstance(v, pd.Timestamp):
+        return v.date().isoformat()
+    if isinstance(v, datetime):
+        return v.date().isoformat()
+
+    s = str(v).strip() if pd.notna(v) else ""
+    if not s:
+        return ""
+
+    # Número Excel (días desde 1899-12-30)
+    if _is_number(s):
+        try:
+            base = datetime(1899, 12, 30)
+            dt = base + timedelta(days=int(float(s)))
+            return dt.date().isoformat()
+        except Exception:
+            pass
+
+    # Si viene como string, intenta convertir y devolver SOLO la fecha
+    try:
+        dt = pd.to_datetime(s, dayfirst=False, errors="raise")
+        return dt.date().isoformat()
+    except Exception:
+        # Si no se puede parsear, quita posibles horas por patrones comunes
+        for sep in ("T", " "):
+            if sep in s:
+                return s.split(sep, 1)[0]
+        return s  # último recurso (ya sin tocar)
 
 
 @dataclass
-class MatchRow:
-    date_str: str
-    division: str
-    name1: str
-    name2: str
-    # parciales (pueden venir vacíos)
-    s: List[Tuple[Optional[int], Optional[int]]] = field(default_factory=list)
-
-    @property
-    def result_sets(self) -> str:
-        """Devuelve '3–1' o '' si no hay sets válidos."""
-        s1 = s2 = 0
-        any_valid = False
-        for a, b in self.s:
-            if _is_number(a) and _is_number(b):
-                any_valid = True
-                if int(a) > int(b):
-                    s1 += 1
-                elif int(b) > int(a):
-                    s2 += 1
-        return f"{s1}–{s2}" if any_valid else ""
-
-    def as_dict(self) -> Dict:
-        # Devuelvo varios alias para que cualquier plantilla los pinte
-        d = {
-            "date": self.date_str,
-            "division": self.division,
-            "result_sets": self.result_sets,
-            # nombres con alias
-            "name1": self.name1,
-            "name2": self.name2,
-            "j1": self.name1,
-            "j2": self.name2,
-            "player1": self.name1,
-            "player2": self.name2,
-            "jugador1": self.name1,
-            "jugador2": self.name2,
-        }
-        # S1-J1, S1-J2, ..., S5-J2
-        for i, (a, b) in enumerate(self.s, start=1):
-            d[f"s{i}_j1"] = "" if not _is_number(a) else int(a)
-            d[f"s{i}_j2"] = "" if not _is_number(b) else int(b)
-        return d
-
-
-@dataclass
-class PlayerAgg:
-    played: int = 0
-    wins: int = 0
-    sets_for: int = 0
-    sets_against: int = 0
-    points_for: int = 0
-    points_against: int = 0
-    award_points: int = 0  # PUNTOS LIGA (históricos)
-
-
 class LeagueData:
-    """
-    Carga los excels por **posición fija**, como acordamos:
+    base_dir: str
 
-    RESULTADOS Tx:
-      col0: fecha
-      col2: jugador 1
-      col3: jugador 2
-      col4..13: S1-J1, S1-J2, S2-J1, S2-J2, S3-J1, S3-J2, S4-J1, S4-J2, S5-J1, S5-J2
+    def __post_init__(self):
+        self._players_by_season: Dict[str, Dict[str, List[str]]] = {}
+        self._results_by_season: Dict[str, pd.DataFrame] = {}
+        self._season_names: List[str] = []
+        self._discover()
 
-    JUGADORES Tx:
-      col0: División 1
-      col1: División 2
-      col2: División 3 - A  (si existe)
-      col3: División 3 - B  (si existe)
-    """
+    # -------------------------
+    # Descubrimiento de ficheros
+    # -------------------------
+    def _discover(self):
+        seasons = []
+        for fname in os.listdir(self.base_dir):
+            low = fname.lower()
+            if low.startswith("resultados t") and (low.endswith(".xlsx") or low.endswith(".xls")):
+                seasons.append(fname.split(".")[0].split(" ", 1)[-1].strip())  # "T5", "T4", etc.
+        seasons = sorted(seasons, key=lambda s: (len(s), s))
+        self._season_names = [f"Temporada {s[1:]}" for s in seasons]
 
-    def __init__(self, base_dir: Path):
-        self.base_dir = Path(base_dir)
-        self._seasons: List[SeasonLabel] = []
-        # roster por temporada
-        self.roster: Dict[SeasonLabel, Dict[str, List[str]]] = {}
-        # resultados por temporada
-        self.results: Dict[SeasonLabel, List[MatchRow]] = {}
+    # -------------------------
+    # API PÚBLICA
+    # -------------------------
 
-        self._discover_seasons()
-        for s in self._seasons:
-            self._load_players(s)
-            self._load_results(s)
+    def seasons(self) -> List[str]:
+        return ["(General)"] + self._season_names
 
-        # pre-cálculo para histórica
-        self._historic: Dict[str, PlayerAgg] = {}
-        self._compute_historic_points()
+    def divisions_for(self, season_label: str) -> List[str]:
+        players = self._load_players_for(season_label)
+        return list(players.keys())
 
-    # -------------------- descubrimiento y carga -------------------- #
-    def _discover_seasons(self):
-        jug = sorted(self.base_dir.glob("JUGADORES T*.xlsx"))
-        res = sorted(self.base_dir.glob("RESULTADOS T*.xlsx"))
+    # ---- GENERAL (histórica)
 
-        nums = set()
-        for p in jug + res:
-            # "JUGADORES T5.xlsx" -> 5
-            digits = "".join(ch for ch in p.stem if ch.isdigit())
-            if digits:
-                nums.add(int(digits))
-        self._seasons = [f"Temporada {n}" for n in sorted(nums)]
+    def general_rows(self) -> List[dict]:
+        agg_points: Dict[str, int] = {}
+        agg_wins: Dict[str, int] = {}
 
-    def _load_players(self, season: SeasonLabel):
-        n = int(season.split()[-1])
-        path = self.base_dir / f"JUGADORES T{n}.xlsx"
-        df = pd.read_excel(path, header=None)
+        for season_label in self._season_names:
+            for division in self.divisions_for(season_label):
+                table = self.season_division_table(season_label, division)
 
-        divs: Dict[str, List[str]] = {
-            DIV1: [],
-            DIV2: [],
-        }
-        # col0 -> DIV1, col1 -> DIV2
-        if df.shape[1] >= 1:
-            divs[DIV1] = [_clean_name(x) for x in df.iloc[:, 0].dropna().tolist()]
-            divs[DIV1] = [x for x in divs[DIV1] if x]
-        if df.shape[1] >= 2:
-            divs[DIV2] = [_clean_name(x) for x in df.iloc[:, 1].dropna().tolist()]
-            divs[DIV2] = [x for x in divs[DIV2] if x]
+                if division.startswith("División 1"):
+                    base = [34, 31, 29, 27]
 
-        # col2/col3 -> grupos de 3ª
-        if df.shape[1] >= 3:
-            divs[DIV3A] = [_clean_name(x) for x in df.iloc[:, 2].dropna().tolist()]
-            divs[DIV3A] = [x for x in divs[DIV3A] if x]
-        if df.shape[1] >= 4:
-            divs[DIV3B] = [_clean_name(x) for x in df.iloc[:, 3].dropna().tolist()]
-            divs[DIV3B] = [x for x in divs[DIV3B] if x]
+                    def puntos_pos(pos):
+                        if pos <= 4:
+                            return base[pos - 1]
+                        return 27 - (pos - 4)  # 26,25,24,...
 
-        self.roster[season] = divs
+                elif division.startswith("División 2"):
+                    def puntos_pos(pos):
+                        return max(20 - (pos - 1), 0)
+                else:
+                    def puntos_pos(pos):
+                        return max(10 - (pos - 1), 0)
 
-    def _division_of(self, season: SeasonLabel, j1: str, j2: str) -> str:
-        divs = self.roster.get(season, {})
-        for div_name, players in divs.items():
-            if j1 in players or j2 in players:
-                return div_name
-        return "Desconocida"
+                for idx, row in enumerate(table, start=1):
+                    name = row["jugador"]
+                    pts = puntos_pos(idx)
+                    agg_points[name] = agg_points.get(name, 0) + pts
+                    agg_wins[name] = agg_wins.get(name, 0) + row["V"]
 
-    def _load_results(self, season: SeasonLabel):
-        n = int(season.split()[-1])
-        path = self.base_dir / f"RESULTADOS T{n}.xlsx"
-        df = pd.read_excel(path, header=None)
+        rows = []
+        for name, pts in agg_points.items():
+            rows.append({
+                "jugador": name,
+                "PUNTOS_LIGA": pts,
+                "V": agg_wins.get(name, 0),
+            })
 
-        rows: List[MatchRow] = []
-        for _, r in df.iterrows():
-            date_cell = r.iloc[0] if df.shape[1] > 0 else ""
-            # fecha presentada solo como AAAA-MM-DD (sin hora)
-            if isinstance(date_cell, pd.Timestamp):
-                date_str = str(date_cell.date())
-            else:
-                date_str = str(date_cell).split()[0].strip()
+        rows.sort(key=lambda r: (-r["PUNTOS_LIGA"], -r["V"], r["jugador"]))
+        return rows
 
-            name1 = _clean_name(r.iloc[2] if df.shape[1] > 2 else "")
-            name2 = _clean_name(r.iloc[3] if df.shape[1] > 3 else "")
-            # 10 celdas de sets a partir de col4 (S1-J1..S5-J2)
-            sets: List[Tuple[Optional[int], Optional[int]]] = []
-            for k in range(5):
-                a = r.iloc[4 + 2 * k] if df.shape[1] > (4 + 2 * k) else None
-                b = r.iloc[5 + 2 * k] if df.shape[1] > (5 + 2 * k) else None
-                a = int(a) if _is_number(a) else None
-                b = int(b) if _is_number(b) else None
-                sets.append((a, b))
+    # ---- TABLA por temporada/división
 
-            div_name = self._division_of(season, name1, name2)
-            rows.append(MatchRow(date_str=date_str, division=div_name, name1=name1, name2=name2, s=sets))
+    def season_division_table(self, season_label: str, division: str) -> List[dict]:
+        players_by_div = self._load_players_for(season_label)
+        if division not in players_by_div:
+            return []
 
-        # quito filas que no tengan nombres (líneas en blanco)
-        rows = [m for m in rows if m.name1 or m.name2]
-        # orden por fecha asc
-        rows.sort(key=lambda m: (m.date_str, m.division, m.name1, m.name2))
-        self.results[season] = rows
+        players = [p for p in players_by_div[division] if p and str(p).strip() != ""]
+        stats = {p: {"PJ": 0, "V": 0, "sets_f": 0, "sets_c": 0, "pts_f": 0, "pts_c": 0} for p in players}
 
-    # --------------------------- consultas --------------------------- #
-    def seasons_list(self) -> List[SeasonLabel]:
-        return list(self._seasons)
+        df = self._load_results_for(season_label)
 
-    def divisions_for(self, season: SeasonLabel) -> List[str]:
-        divs = list(self.roster.get(season, {}).keys())
-        # orden fijo
-        order = {DIV1: 1, DIV2: 2, DIV3A: 3, DIV3B: 4}
-        return sorted(divs, key=lambda d: order.get(d, 99))
+        for _, row in df.iterrows():
+            try:
+                j1 = str(row.iloc[2]).strip()
+                j2 = str(row.iloc[3]).strip()
+            except Exception:
+                continue
 
-    def results_for(self, season: SeasonLabel) -> List[Dict]:
-        return [m.as_dict() for m in self.results.get(season, [])]
+            if j1 not in players and j2 not in players:
+                continue
 
-    # -------------------- standings y puntos liga -------------------- #
-    def _calc_standings_one(self, season: SeasonLabel, division: str) -> List[Tuple[str, PlayerAgg]]:
-        """Stats por jugador en una temporada/división (solo partidos con sets válidos).
-        **Incluye también a los jugadores que aún no han disputado partidos** (PJ=0),
-        para que el listado tenga siempre a todos los del roster.
+            tallied = _tally_match(row)
+            if not tallied:
+                continue  # NO cuenta si no está jugado
+
+            j1n, j2n, s1, s2, p1, p2 = tallied
+
+            if j1n in stats:
+                stats[j1n]["PJ"] += 1
+                stats[j1n]["sets_f"] += s1
+                stats[j1n]["sets_c"] += s2
+                stats[j1n]["pts_f"] += p1
+                stats[j1n]["pts_c"] += p2
+                if s1 > s2:
+                    stats[j1n]["V"] += 1
+
+            if j2n in stats:
+                stats[j2n]["PJ"] += 1
+                stats[j2n]["sets_f"] += s2
+                stats[j2n]["sets_c"] += s1
+                stats[j2n]["pts_f"] += p2
+                stats[j2n]["pts_c"] += p1
+                if s2 > s1:
+                    stats[j2n]["V"] += 1
+
+        rows = []
+        for p in players:
+            st = stats[p]
+            rows.append({
+                "jugador": p,
+                "PJ": st["PJ"],
+                "V": st["V"],
+                "dsets": st["sets_f"] - st["sets_c"],
+                "dpuntos": st["pts_f"] - st["pts_c"],
+            })
+
+        rows.sort(key=lambda r: (-r["V"], -r["dsets"], -r["dpuntos"], r["jugador"]))
+        return rows
+
+    # ---- RESULTADOS por temporada
+
+    def results_rows(self, season_label: str) -> List[dict]:
         """
-        agg: Dict[str, PlayerAgg] = {}
+        Devuelve filas con todas las claves que la plantilla puede usar:
+        - date / fecha
+        - division (si falta en Excel, se deduce por los jugadores)
+        - name1/j1/jugador1/player1  y  name2/j2/jugador2/player2
+        - result_sets / resumen_sets
+        - s1_j1, s1_j2, ..., s5_j1, s5_j2  (y alias s1j1, s1j2, ...)
+        """
+        df = self._load_results_for(season_label)
+        if df.empty:
+            return []
 
-        # 1) Sembrar con todos los jugadores del roster de esa división
-        players_in_div = self.roster.get(season, {}).get(division, [])
-        for p in players_in_div:
-            if p and p not in agg:
-                agg[p] = PlayerAgg()
+        players_by_div = self._load_players_for(season_label)
 
-        # 2) Volcar los partidos con sets válidos
-        for m in self.results.get(season, []):
-            if m.division != division:
-                continue
-            # ¿hay al menos un set con números?
-            has_valid = any(_is_number(a) and _is_number(b) for a, b in m.s)
-            if not has_valid:
-                continue
+        def _cell(row: pd.Series, i: int):
+            if i >= len(row):
+                return None
+            v = row.iloc[i]
+            if pd.isna(v):
+                return None
+            if _is_number(v):
+                f = float(v)
+                return int(f) if f.is_integer() else f
+            return str(v).strip()
 
-            for name in (m.name1, m.name2):
-                if name and name not in agg:
-                    agg[name] = PlayerAgg()
+        rows: List[dict] = []
 
-            # sets y puntos
-            s1 = s2 = 0
-            p1 = p2 = 0
-            for a, b in m.s:
-                if _is_number(a) and _is_number(b):
-                    a = int(a)
-                    b = int(b)
-                    p1 += a
-                    p2 += b
-                    if a > b:
-                        s1 += 1
-                    elif b > a:
-                        s2 += 1
+        for _, row in df.iterrows():
+            raw_date = _cell(row, 0)
+            fecha_str = _excel_date_to_str(raw_date)
 
-            # PJ + V (victoria por más sets)
-            if m.name1:
-                agg[m.name1].played += 1
-                agg[m.name1].wins += 1 if s1 > s2 else 0
-                agg[m.name1].sets_for += s1
-                agg[m.name1].sets_against += s2
-                agg[m.name1].points_for += p1
-                agg[m.name1].points_against += p2
+            raw_div = _cell(row, 1)  # puede venir vacío o como número
+            j1 = (_cell(row, 2) or "") or ""
+            j2 = (_cell(row, 3) or "") or ""
 
-            if m.name2:
-                agg[m.name2].played += 1
-                agg[m.name2].wins += 1 if s2 > s1 else 0
-                agg[m.name2].sets_for += s2
-                agg[m.name2].sets_against += s1
-                agg[m.name2].points_for += p2
-                agg[m.name2].points_against += p1
+            # sets
+            s = [_cell(row, i) for i in range(4, 14)]
+            s1j1, s1j2, s2j1, s2j2, s3j1, s3j2, s4j1, s4j2, s5j1, s5j2 = s + [None] * (10 - len(s))
 
-        def sort_key(it):
-            name, a = it
-            return (-a.wins, -(a.sets_for - a.sets_against), -a.points_for, name.lower())
+            # Resumen en sets
+            resumen = ""
+            tall = _tally_match(row)
+            if tall:
+                _, _, ss1, ss2, _, _ = tall
+                resumen = f"{ss1}-{ss2}"
 
-        return sorted(agg.items(), key=sort_key)
+            # Deducción de división si la celda no trae el nombre (o es numérica)
+            division = ""
+            if isinstance(raw_div, str) and raw_div and not raw_div.isdigit():
+                division = raw_div
+            else:
+                found = None
+                for div_name, lst in players_by_div.items():
+                    if (j1 in lst) and (j2 in lst):
+                        found = div_name
+                        break
+                if not found:
+                    # si solo uno de los dos aparece en una división, usa esa
+                    for div_name, lst in players_by_div.items():
+                        if (j1 in lst) or (j2 in lst):
+                            found = div_name
+                            break
+                division = found or ""
 
-    @staticmethod
-    def _award_series_for_division(division: str, n_players: int) -> List[int]:
-        if division == DIV1:
-            start = 34
-        elif division == DIV2:
-            start = 20
-        else:  # DIV3-A / DIV3-B
-            start = 10
-        # descendente 1 en 1
-        return [start - i for i in range(n_players)]
+            # fila con alias de claves para que la plantilla siempre encuentre algo
+            row_dict = {
+                "date": fecha_str,
+                "fecha": fecha_str,
+                "division": division,
 
-    def _compute_historic_points(self):
-        """Calcula award_points por temporada/división y acumula todo."""
-        hist: Dict[str, PlayerAgg] = {}
+                "name1": j1, "j1": j1, "jugador1": j1, "player1": j1,
+                "name2": j2, "j2": j2, "jugador2": j2, "player2": j2,
 
-        for season in self._seasons:
-            for division in self.divisions_for(season):
-                rows = self._calc_standings_one(season, division)
-                if not rows:
-                    continue
-                awards = self._award_series_for_division(division, len(rows))
+                "result_sets": resumen,
+                "resumen_sets": resumen,
 
-                for pos, (name, a) in enumerate(rows, start=1):
-                    if name not in hist:
-                        hist[name] = PlayerAgg()
-                    h = hist[name]
-                    # acumulo stats básicos
-                    h.played += a.played
-                    h.wins += a.wins
-                    h.sets_for += a.sets_for
-                    h.sets_against += a.sets_against
-                    h.points_for += a.points_for
-                    h.points_against += a.points_against
-                    # y puntos de liga de esa posición
-                    h.award_points += awards[pos - 1] if pos - 1 < len(awards) else 0
+                "s1_j1": s1j1, "s1_j2": s1j2,
+                "s2_j1": s2j1, "s2_j2": s2j2,
+                "s3_j1": s3j1, "s3_j2": s3j2,
+                "s4_j1": s4j1, "s4_j2": s4j2,
+                "s5_j1": s5j1, "s5_j2": s5j2,
 
-        self._historic = hist
+                # alias sin guion bajo (por si alguna plantilla antigua los usa)
+                "s1j1": s1j1, "s1j2": s1j2,
+                "s2j1": s2j1, "s2j2": s2j2,
+                "s3j1": s3j1, "s3j2": s3j2,
+                "s4j1": s4j1, "s4j2": s4j2,
+                "s5j1": s5j1, "s5j2": s5j2,
+            }
+            rows.append(row_dict)
 
-    # públicos para la web
-    def standings_division(self, season: SeasonLabel, division: str) -> List[Dict]:
-        rows = self._calc_standings_one(season, division)
-        out = []
-        for name, a in rows:
-            out.append(
-                {
-                    "player": name,
-                    "played": a.played,
-                    "wins": a.wins,
-                    "sets_for": a.sets_for,
-                    "sets_against": a.sets_against,
-                    "points_for": a.points_for,
-                    "points_against": a.points_against,
-                }
-            )
-        return out
+        return rows
 
-    def standings_general(self) -> List[Dict]:
-        """Tabla general histórica, ORDENADA por award_points y después por desempates."""
-        def sort_key(item):
-            name, a = item
-            return (-a.award_points, -a.wins, -(a.sets_for - a.sets_against), -a.points_for, name.lower())
+    # -------------------------
+    # Carga de datos (excel)
+    # -------------------------
 
-        rows = sorted(self._historic.items(), key=sort_key)
-        out = []
-        for name, a in rows:
-            out.append(
-                {
-                    "player": name,
-                    "played": a.played,
-                    "wins": a.wins,
-                    "sets_for": a.sets_for,
-                    "sets_against": a.sets_against,
-                    "points_for": a.points_for,
-                    "points_against": a.points_against,
-                    "award_points": a.award_points,  # <<<<<<<<<<<<<<<<<<<<<<  PUNTOS LIGA
-                }
-            )
-        return out
+    def _label_to_Tn(self, season_label: str) -> str:
+        n = season_label.split()[-1]
+        return f"T{n}"
+
+    def _load_results_for(self, season_label: str) -> pd.DataFrame:
+        if season_label not in self._results_by_season:
+            Tn = self._label_to_Tn(season_label)  # T5
+            df = None
+            for ext in (".xlsx", ".xls"):
+                path = os.path.join(self.base_dir, f"RESULTADOS {Tn}{ext}")
+                if os.path.exists(path):
+                    df = pd.read_excel(path, header=None)
+                    break
+            if df is None:
+                for ext in (".xlsx", ".xls"):
+                    path = os.path.join(self.base_dir, f"RESULTADOS {season_label}{ext}")
+                    if os.path.exists(path):
+                        df = pd.read_excel(path, header=None)
+                        break
+            if df is None:
+                self._results_by_season[season_label] = pd.DataFrame()
+            else:
+                self._results_by_season[season_label] = df.fillna(value=pd.NA)
+        return self._results_by_season[season_label]
+
+    def _load_players_for(self, season_label: str) -> Dict[str, List[str]]:
+        if season_label in self._players_by_season:
+            return self._players_by_season[season_label]
+
+        Tn = self._label_to_Tn(season_label)
+        df = None
+        for ext in (".xlsx", ".xls"):
+            path = os.path.join(self.base_dir, f"JUGADORES {Tn}{ext}")
+            if os.path.exists(path):
+                df = pd.read_excel(path, header=None)
+                break
+        if df is None:
+            for ext in (".xlsx", ".xls"):
+                path = os.path.join(self.base_dir, f"JUGADORES {season_label}{ext}")
+                if os.path.exists(path):
+                    df = pd.read_excel(path, header=None)
+                    break
+        if df is None:
+            self._players_by_season[season_label] = {}
+            return {}
+
+        mapping: Dict[str, List[str]] = {}
+        names = ["División 1", "División 2", "División 3 - A", "División 3 - B", "División 3 - C"]
+        for i, div_name in enumerate(names):
+            if i < df.shape[1]:
+                col = df.iloc[:, i].dropna().astype(str).str.strip().tolist()
+                col = [x for x in col if x not in ("", "nan")]
+                if col:
+                    mapping[div_name] = col
+
+        self._players_by_season[season_label] = mapping
+        return mapping

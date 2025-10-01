@@ -19,13 +19,12 @@
 {% if rows and rows|length>0 %}
 <div class="table-outer">
   <table class="grid">
-    <!-- Cabeceras: Fecha, División, Jugador1, Jugador2, Resumen, S1-J1..S5-J2 -->
     <colgroup>
       <col class="col-date">
       <col class="col-div">
       <col class="col-name">
       <col class="col-name">
-      <col class="col-num"><!-- Resumen sets -->
+      <col class="col-num">
       <col class="col-num"><col class="col-num">
       <col class="col-num"><col class="col-num">
       <col class="col-num"><col class="col-num">
@@ -49,26 +48,26 @@
     <tbody>
       {% for r in rows %}
       <tr>
-        <td>{{ r.date|default('') }}</td>
-        <td>{{ r.division|default('') }}</td>
-        <td>{{ (r.name1 or r.j1 or r.player1 or r.jugador1)|default('') }}</td>
-        <td>{{ (r.name2 or r.j2 or r.player2 or r.jugador2)|default('') }}</td>
-        <td>{{ r.result_sets|default('') }}</td>
+        <td>{{ r.date or r.fecha or '' }}</td>
+        <td>{{ r.division or '' }}</td>
+        <td>{{ r.name1 or r.j1 or r.player1 or r.jugador1 or '' }}</td>
+        <td>{{ r.name2 or r.j2 or r.player2 or r.jugador2 or '' }}</td>
+        <td>{{ r.result_sets or r.resumen_sets or '' }}</td>
 
-        <td>{{ r.s1_j1|default('') }}</td>
-        <td>{{ r.s1_j2|default('') }}</td>
+        <td>{{ r.s1_j1 or r.s1j1 or '' }}</td>
+        <td>{{ r.s1_j2 or r.s1j2 or '' }}</td>
 
-        <td>{{ r.s2_j1|default('') }}</td>
-        <td>{{ r.s2_j2|default('') }}</td>
+        <td>{{ r.s2_j1 or r.s2j1 or '' }}</td>
+        <td>{{ r.s2_j2 or r.s2j2 or '' }}</td>
 
-        <td>{{ r.s3_j1|default('') }}</td>
-        <td>{{ r.s3_j2|default('') }}</td>
+        <td>{{ r.s3_j1 or r.s3j1 or '' }}</td>
+        <td>{{ r.s3_j2 or r.s3j2 or '' }}</td>
 
-        <td>{{ r.s4_j1|default('') }}</td>
-        <td>{{ r.s4_j2|default('') }}</td>
+        <td>{{ r.s4_j1 or r.s4j1 or '' }}</td>
+        <td>{{ r.s4_j2 or r.s4j2 or '' }}</td>
 
-        <td>{{ r.s5_j1|default('') }}</td>
-        <td>{{ r.s5_j2|default('') }}</td>
+        <td>{{ r.s5_j1 or r.s5j1 or '' }}</td>
+        <td>{{ r.s5_j2 or r.s5j2 or '' }}</td>
       </tr>
       {% endfor %}
     </tbody>
