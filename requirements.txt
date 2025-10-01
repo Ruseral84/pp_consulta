@@ -5,4 +5,8 @@ pandas==2.2.2
 openpyxl==3.1.5
 python-dateutil==2.9.0.post0
 APScheduler==3.10.4
+python-multipart==0.0.9
+python-telegram-bot==20.7
+
+
 
