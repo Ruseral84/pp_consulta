@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Pendientes de revisión</h2>
+{% if subs|length == 0 %}
+<p>No hay envíos pendientes.</p>
+{% else %}
+<table class="table-auto w-full mt-3">
+  <thead>
+    <tr>
+      <th>ID</th><th>Fecha</th><th>División</th><th>Partido</th><th>Sets</th><th>Enviado</th><th>Acciones</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in subs %}
+    <tr>
+      <td>{{ s.id }}</td>
+      <td>{{ s.fecha }}</td>
+      <td>{{ s.division }}</td>
+      <td>{{ s.j1 }} vs {{ s.j2 }}</td>
+      <td>
+        S1({{s.s1j1}}–{{s.s1j2}}),
+        S2({{s.s2j1}}–{{s.s2j2}}),
+        S3({{s.s3j1}}–{{s.s3j2}}),
+        S4({{s.s4j1}}–{{s.s4j2}}),
+        S5({{s.s5j1}}–{{s.s5j2}})
+      </td>
+      <td>{{ s.submitted_at }}{% if s.submitted_by %} — {{ s.submitted_by }}{% endif %}</td>
+      <td class="space-x-2">
+        <form method="post" action="/admin/approve/{{ s.id }}" style="display:inline">
+          <button class="px-2 py-1 bg-green-600 text-white rounded">Aprobar</button>
+        </form>
+        <form method="post" action="/admin/reject/{{ s.id }}" style="display:inline">
+          <button class="px-2 py-1 bg-red-600 text-white rounded">Rechazar</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

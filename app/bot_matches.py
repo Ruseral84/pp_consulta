@@ -1,159 +1,184 @@
 # app/bot_matches.py
-import argparse
 import os
-import sys
-import signal
-import threading
+import argparse
+import hashlib
 import time
-from datetime import date
+from datetime import datetime, date
+import urllib.parse as urlparse
+
 import pandas as pd
-from apscheduler.schedulers.background import BackgroundScheduler
+import schedule
+import requests
+from dotenv import load_dotenv
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = BASE_DIR  # tus Excels están en la raíz del proyecto
-RESULTS_FILE = os.path.join(DATA_DIR, "RESULTADOS T5.xlsx")
+# =========================
+# Configuración y utilidades
+# =========================
 
-_stop_event = threading.Event()
-_scheduler: BackgroundScheduler | None = None
+load_dotenv()
+
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+SITE_BASE_URL    = os.getenv("SITE_BASE_URL", "").rstrip("/")   # p.ej. https://pp-consulta.onrender.com
+SEASON_NAME      = os.getenv("SEASON_NAME", "Temporada 5")
+SUBMIT_SALT      = os.getenv("SUBMIT_SALT", "pp-at3w-salt")     # opcional, solo para generar un id reproducible
+
+BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
+RESULTS_FILE = os.path.join(BASE_DIR, "..", "RESULTADOS T5.xlsx")
 
 
-def _read_today_and_delayed_matches() -> tuple[list[dict], list[dict]]:
+def _norm_date(ts) -> pd.Timestamp | None:
+    """Convierte a Timestamp y normaliza a 00:00 (sin hora)."""
+    if pd.isna(ts):
+        return None
+    try:
+        t = pd.to_datetime(ts, errors="coerce")
+        if pd.isna(t):
+            return None
+        return t.normalize()
+    except Exception:
+        return None
+
+
+def _is_unplayed(row) -> bool:
+    """Devuelve True si el partido no tiene ningún set informado."""
+    if len(row) <= 4:
+        return True
+    # Si hay algún valor numérico o no vacío a partir de la col 4, lo consideramos 'jugado'
+    for x in row[4:]:
+        if pd.notna(x) and str(x).strip() != "":
+            return False
+    return True
+
+
+def _build_submit_link(date_str: str, division: str, j1: str, j2: str) -> str:
     """
-    Lee RESULTADOS T5.xlsx con el layout fijo:
-      Col1: Fecha
-      Col2: División
-      Col3: Jugador 1
-      Col4: Jugador 2
-      Col5..Col14: S1-J1, S1-J2, S2-J1, S2-J2, ... S5-J1, S5-J2
-
-    Devuelve (hoy_sin_jugar, retrasados_sin_jugar).
+    Construye el enlace para introducir resultados.
+    GET /submit-result?season=...&date=...&div=...&j1=...&j2=...&id=...
     """
-    df = pd.read_excel(RESULTS_FILE)
+    if not SITE_BASE_URL:
+        return ""  # si no hay base URL, no enlazamos
 
-    # Normaliza fecha (Col1, índice 0)
-    df.iloc[:, 0] = pd.to_datetime(df.iloc[:, 0], errors="coerce").dt.normalize()
+    # ID reproducible basado en los datos del partido + salt
+    token_src = f"{SEASON_NAME}|{date_str}|{division}|{j1}|{j2}|{SUBMIT_SALT}"
+    match_id = hashlib.sha1(token_src.encode("utf-8")).hexdigest()[:16]
 
-    # Columnas por posición (según tu formato fijo)
-    col_fecha_idx = 0
-    col_div_idx = 1 if df.shape[1] > 1 else None
-    col_j1_idx = 2 if df.shape[1] > 2 else None
-    col_j2_idx = 3 if df.shape[1] > 3 else None
+    params = {
+        "season": SEASON_NAME,
+        "date": date_str,
+        "div": division,
+        "j1": j1,
+        "j2": j2,
+        "id": match_id,
+    }
+    query = urlparse.urlencode(params, doseq=False, safe=" ")
+    return f"{SITE_BASE_URL}/submit-result?{query}"
 
-    # Pares de columnas de sets (Sx-J1, Sx-J2)
-    set_cols = []
-    # Empiezan en la col 5 (índice 4), de dos en dos, hasta 5 sets
-    for k in range(5):  # 0..4 => set1..set5
-        c1 = 4 + 2 * k
-        c2 = 5 + 2 * k
-        if df.shape[1] > c2:
-            set_cols.append((c1, c2))
 
-    today_ts = pd.Timestamp(date.today())
-    hoy, retrasados = [], []
+def _fmt_line_link(date_str: str, division: str, j1: str, j2: str) -> str:
+    """
+    Devuelve la línea formateada como enlace clicable para Telegram (parse_mode=HTML).
+    """
+    href = _build_submit_link(date_str, division, j1, j2)
+    text = f"{date_str} - {division} - {j1} vs {j2}"
+    if href:
+        # Toda la línea clicable
+        return f"<a href=\"{href}\">{text}</a>"
+    return text
+
+
+def send_telegram_message(message: str):
+    """Enviar mensaje al grupo de Telegram (HTML)."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Falta TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en .env")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True}
+    try:
+        r = requests.post(url, data=payload, timeout=15)
+        if r.status_code != 200:
+            print(f"⚠️ Error Telegram {r.status_code}: {r.text}")
+    except Exception as e:
+        print(f"⚠️ Error enviando a Telegram: {e}")
+
+
+# =========================
+# Núcleo del bot
+# =========================
+
+def build_messages():
+    """
+    Lee el Excel y construye los dos mensajes (retrasados y hoy) con enlaces clicables.
+    Retorna (msg_retrasados, msg_hoy).
+    """
+    # Leemos tal cual, sin cabeceras (formato fijo por columnas)
+    df = pd.read_excel(RESULTS_FILE, header=None)
+
+    today_ts  = pd.Timestamp(date.today())
+    today_str = today_ts.strftime("%Y-%m-%d")
+
+    partidos_hoy = []
+    partidos_retrasados = []
 
     for _, row in df.iterrows():
-        f = row.iloc[col_fecha_idx] if df.shape[1] > col_fecha_idx else None
-        if not isinstance(f, pd.Timestamp) or pd.isna(f):
-            continue  # sin fecha válida, se ignora
+        fecha = _norm_date(row[0])
+        if not fecha:
+            continue
 
-        division = str(row.iloc[col_div_idx]).strip() if col_div_idx is not None else "Desconocida"
-        p1 = str(row.iloc[col_j1_idx]).strip() if col_j1_idx is not None else ""
-        p2 = str(row.iloc[col_j2_idx]).strip() if col_j2_idx is not None else ""
+        division = str(row[1]).strip() if len(row) > 1 and pd.notna(row[1]) else "Desconocida"
+        j1 = str(row[2]).strip() if len(row) > 2 and pd.notna(row[2]) else "?"
+        j2 = str(row[3]).strip() if len(row) > 3 and pd.notna(row[3]) else "?"
 
-        # ¿Hay algún punto cargado en los sets?
-        any_points = False
-        for c1, c2 in set_cols:
-            s1 = row.iloc[c1]
-            s2 = row.iloc[c2]
-            if pd.notna(s1) or pd.notna(s2):
-                any_points = True
-                break
+        if _is_unplayed(row):
+            if fecha == today_ts:
+                partidos_hoy.append(_fmt_line_link(today_str, division, j1, j2))
+            elif fecha < today_ts:
+                partidos_retrasados.append(_fmt_line_link(fecha.strftime("%Y-%m-%d"), division, j1, j2))
 
-        # Solo nos interesan los partidos SIN jugar (sin puntos)
-        if not any_points:
-            partido = {
-                "fecha": f.date().isoformat(),
-                "division": division if division else "Desconocida",
-                "jugador1": p1,
-                "jugador2": p2,
-            }
-            if f == today_ts:
-                hoy.append(partido)
-            elif f < today_ts:
-                retrasados.append(partido)
+    # Mensajes HTML
+    msg_retrasados = "📋 <b>PARTIDOS RETRASADOS</b>:\n" + ("\n".join(partidos_retrasados) if partidos_retrasados else "Ninguno")
+    msg_hoy        = f"📅 <b>PARTIDOS DE HOY ({today_str})</b>:\n" + ("\n".join(partidos_hoy) if partidos_hoy else "Ninguno")
 
-    return hoy, retrasados
+    return msg_retrasados, msg_hoy
 
 
-def run_once(verbose: bool = True) -> None:
-    try:
-        hoy, retrasados = _read_today_and_delayed_matches()
-        if verbose:
-            # Retrasados
-            print("\nPARTIDOS RETRASADOS:")
-            if retrasados:
-                for m in retrasados:
-                    print(f"{m['fecha']} - {m['division']} - {m['jugador1']} vs {m['jugador2']}")
-            else:
-                print("Ninguno")
+def check_matches():
+    """Construye y envía los dos mensajes."""
+    msg_retrasados, msg_hoy = build_messages()
 
-            # Hoy (título con fecha de hoy)
-            hoy_str = date.today().isoformat()
-            print(f"\nPARTIDOS DE HOY — {hoy_str}:")
-            if hoy:
-                for m in hoy:
-                    print(f"{m['fecha']} - {m['division']} - {m['jugador1']} vs {m['jugador2']}")
-            else:
-                print("Ninguno")
-    except Exception as e:
-        print(f"Error en run_once: {e}", file=sys.stderr)
+    # Mostrar por consola
+    print(msg_retrasados)
+    print()
+    print(msg_hoy)
+
+    # Enviar a Telegram (si hay token / chat)
+    send_telegram_message(msg_retrasados)
+    send_telegram_message(msg_hoy)
 
 
-def _handle_stop(*_args):
-    global _scheduler
-    if _scheduler:
-        try:
-            _scheduler.shutdown(wait=False)
-        except Exception:
-            pass
-    _stop_event.set()
+def run_scheduler():
+    """Programar ejecución de lunes a jueves a las 09:00."""
+    schedule.every().monday.at("09:00").do(check_matches)
+    schedule.every().tuesday.at("09:00").do(check_matches)
+    schedule.every().wednesday.at("09:00").do(check_matches)
+    schedule.every().thursday.at("09:00").do(check_matches)
+
+    print("⏳ Bot en ejecución (lunes–jueves 09:00). Ctrl+C para salir.")
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Bot de partidos (Temporada 5)")
-    parser.add_argument("--once", action="store_true", help="Ejecutar una sola vez y salir")
+# =========================
+# CLI
+# =========================
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Bot de partidos AT3W")
+    parser.add_argument("--once", action="store_true", help="Ejecutar una vez y salir")
     args = parser.parse_args()
 
     if args.once:
-        run_once(verbose=True)
-        return
-
-    global _scheduler
-    _scheduler = BackgroundScheduler(timezone="Europe/Madrid")
-    # Lunes a jueves a las 09:00
-    _scheduler.add_job(run_once, "cron", day_of_week="mon,tue,wed,thu", hour=9, minute=0, id="diario_9")
-    _scheduler.start()
-
-    print("Programado L-J a las 09:00 (Europe/Madrid). Ctrl+C o Ctrl+Break para salir.")
-
-    signal.signal(signal.SIGINT, _handle_stop)
-    if hasattr(signal, "SIGTERM"):
-        try:
-            signal.signal(signal.SIGTERM, _handle_stop)
-        except Exception:
-            pass
-    if hasattr(signal, "SIGBREAK"):
-        try:
-            signal.signal(signal.SIGBREAK, _handle_stop)
-        except Exception:
-            pass
-
-    try:
-        while not _stop_event.is_set():
-            time.sleep(0.2)
-    finally:
-        _handle_stop()
-
-
-if __name__ == "__main__":
-    main()
+        check_matches()
+    else:
+        run_scheduler()

@@ -6,6 +6,10 @@ from fastapi.templating import Jinja2Templates
 
 from .parser import LeagueData, project_root_from_this_file
 
+from .submissions import router as submissions_router
+
+app.include_router(submissions_router)
+
 BASE_DIR = project_root_from_this_file(__file__)
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = APP_DIR / "templates"
