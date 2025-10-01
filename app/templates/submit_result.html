@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h2>Introducir resultado</h2>
+<p><strong>Temporada:</strong> {{ season }} &nbsp; | &nbsp; <strong>División:</strong> {{ division }}</p>
+<p><strong>Partido:</strong> {{ j1 }} vs {{ j2 }} &nbsp; | &nbsp; <strong>Fecha:</strong> {{ date }}</p>
+
+<form method="post" action="/submit-result" class="card">
+  <input type="hidden" name="season" value="{{ season }}">
+  <input type="hidden" name="date" value="{{ date }}">
+  <input type="hidden" name="division" value="{{ division }}">
+  <input type="hidden" name="j1" value="{{ j1 }}">
+  <input type="hidden" name="j2" value="{{ j2 }}">
+  <input type="hidden" name="link_id" value="{{ link_id }}">
+
+  <div class="table-outer" style="max-width:480px">
+    <table class="grid">
+      <thead>
+        <tr><th>Set</th><th>{{ j1 }}</th><th>{{ j2 }}</th></tr>
+      </thead>
+      <tbody>
+        {% for n in [1,2,3,4,5] %}
+        <tr>
+          <td>S{{n}}</td>
+          <td><input type="number" min="0" name="s{{n}}j1" inputmode="numeric" style="width:80px"></td>
+          <td><input type="number" min="0" name="s{{n}}j2" inputmode="numeric" style="width:80px"></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <p style="margin-top:12px">
+    <button type="submit">Enviar resultado</button>
+  </p>
+</form>
+
+{% endblock %}
