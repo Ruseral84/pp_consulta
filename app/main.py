@@ -5,9 +5,8 @@ from fastapi.templating import Jinja2Templates
 import os
 
 from .parser import LeagueData
-
 from .submissions import router as submissions_router
-app.include_router(submissions_router)
+
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.join(BASE_DIR, "app")
@@ -15,6 +14,8 @@ APP_DIR = os.path.join(BASE_DIR, "app")
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=os.path.join(APP_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(APP_DIR, "templates"))
+
+app.include_router(submissions_router)
 
 # Instancia única del parser (no tocar lo demás)
 LEAGUE = LeagueData(BASE_DIR)
