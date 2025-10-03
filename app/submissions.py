@@ -1,187 +1,81 @@
-from __future__ import annotations
-
-import os
-import hmac
-import hashlib
-from typing import Optional
-
-from fastapi import APIRouter, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse
+# app/submissions.py
+from fastapi import APIRouter, Request, Form
+from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
-from urllib.parse import unquote_plus, urlencode
+from fastapi import Depends
+from fastapi.staticfiles import StaticFiles
+import secrets
+from urllib.parse import urlencode
 
-# ---------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------
-
-# Carpeta de plantillas (mantén esta ruta como en tu proyecto)
-TEMPLATES = Jinja2Templates(directory="app/templates")
-
-# Temporada activa por defecto (se puede sobreescribir por querystring)
-ACTIVE_SEASON = os.getenv("ACTIVE_SEASON", "Temporada 5")
-
-# Secreto para firmar/enlazar envíos
-SUBMIT_SECRET = os.getenv("SUBMIT_SECRET", "PLEASE_SET_SUBMIT_SECRET")
-
-# Router para enganchar desde app.main
 router = APIRouter()
+templates = Jinja2Templates(directory="app/templates")
 
+# Tokens en memoria para validar submissions
+PENDING_SUBMISSIONS = {}
 
-# ---------------------------------------------------------------------
-# Utilidades
-# ---------------------------------------------------------------------
+def build_submit_link(season: str, date: str, division: str, j1: str, j2: str, base_url: str) -> str:
+    """Construye un enlace seguro a la ruta /submit en Render."""
+    token = secrets.token_hex(8)
+    mid = secrets.token_hex(8)
+    sig = secrets.token_hex(8)
 
-def _hexdigest(data: str) -> str:
-    return hmac.new(SUBMIT_SECRET.encode("utf-8"), data.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def check_sig(mid: str, sig: str) -> bool:
-    """Valida la firma del enlace de envío de resultado."""
-    try:
-        expected = _hexdigest(mid)
-        return hmac.compare_digest(expected, sig)
-    except Exception:
-        return False
-
-
-def build_submit_link(
-    base_url: str,
-    *,
-    season: str,
-    fecha: str,
-    division: str,
-    j1: str,
-    j2: str,
-    mid: str,
-) -> str:
-    """
-    Construye el enlace /submit firmado que usa el bot en Telegram.
-
-    base_url: por ejemplo "https://pp-consulta.onrender.com"
-    """
-    base = base_url.rstrip("/")
-    sig = _hexdigest(mid)
-    qs = urlencode(
-        {
-            "mid": mid,
-            "sig": sig,
-            "fecha": fecha,
-            "division": division,
-            "j1": j1,
-            "j2": j2,
-            "season": season,
-        }
-    )
-    return f"{base}/submit?{qs}"
-
-
-# ---------------------------------------------------------------------
-# Vistas
-# ---------------------------------------------------------------------
-
-@router.get("/submit", response_class=HTMLResponse)
-def submit_get(
-    request: Request,
-    mid: str,
-    sig: str,
-    fecha: str,
-    division: str,
-    j1: str,
-    j2: str,
-    season: str = ACTIVE_SEASON,
-):
-    """
-    Muestra el formulario para introducir el resultado de un partido.
-    - Decodificamos parámetros (unquote_plus) para que NO aparezca %20.
-    - El H1 ahora es "Introducir resultado" (sin repetir fecha/división).
-    """
-    if not check_sig(mid, sig):
-        raise HTTPException(status_code=403, detail="Enlace inválido")
-
-    # Decodificar %20, +, etc. para que se muestren nombres bonitos
-    fecha = unquote_plus(fecha)
-    division = unquote_plus(division)
-    j1 = unquote_plus(j1)
-    j2 = unquote_plus(j2)
-
-    ctx = {
-        "request": request,
-        "title": "Introducir resultado",  # H1 limpio
-        "mid": mid,
-        "sig": sig,
-        "fecha": fecha,
+    PENDING_SUBMISSIONS[mid] = {
+        "season": season,
+        "date": date,
         "division": division,
         "j1": j1,
         "j2": j2,
-        "season": season,
+        "sig": sig,
     }
-    return TEMPLATES.TemplateResponse("submit_result.html", ctx)
 
+    params = {
+        "mid": mid,
+        "sig": sig,
+        "season": season,
+        "date": date,
+        "division": division,
+        "j1": j1,
+        "j2": j2,
+    }
+    return f"{base_url}/submit?{urlencode(params)}"
 
-@router.post("/submit", response_class=HTMLResponse)
-def submit_post(
+@router.get("/submit")
+def submit_result(request: Request, mid: str, sig: str, season: str, date: str, division: str, j1: str, j2: str):
+    if mid not in PENDING_SUBMISSIONS or PENDING_SUBMISSIONS[mid]["sig"] != sig:
+        return templates.TemplateResponse("submit_result_done.html", {"request": request, "error": "Enlace inválido o expirado."})
+
+    return templates.TemplateResponse("submit_result.html", {
+        "request": request,
+        "mid": mid,
+        "sig": sig,
+        "season": season,
+        "date": date,
+        "division": division,
+        "j1": j1,
+        "j2": j2
+    })
+
+@router.post("/submit")
+def submit_result_done(
     request: Request,
     mid: str = Form(...),
     sig: str = Form(...),
-    fecha: str = Form(...),
+    season: str = Form(...),
+    date: str = Form(...),
     division: str = Form(...),
     j1: str = Form(...),
     j2: str = Form(...),
-    season: str = Form(ACTIVE_SEASON),
-    s1j1: Optional[str] = Form(None),
-    s1j2: Optional[str] = Form(None),
-    s2j1: Optional[str] = Form(None),
-    s2j2: Optional[str] = Form(None),
-    s3j1: Optional[str] = Form(None),
-    s3j2: Optional[str] = Form(None),
-    s4j1: Optional[str] = Form(None),
-    s4j2: Optional[str] = Form(None),
-    s5j1: Optional[str] = Form(None),
-    s5j2: Optional[str] = Form(None),
-    sender_name: Optional[str] = Form(None),
+    set1_j1: int = Form(...),
+    set1_j2: int = Form(...),
+    set2_j1: int = Form(...),
+    set2_j2: int = Form(...),
+    set3_j1: int = Form(0),
+    set3_j2: int = Form(0),
 ):
-    """
-    Recibe el resultado introducido. No cambiamos tu flujo:
-    - Valida la firma.
-    - Pasa los datos a la plantilla de confirmación/agradecimiento que ya usas.
-    """
-    if not check_sig(mid, sig):
-        raise HTTPException(status_code=403, detail="Enlace inválido")
+    if mid not in PENDING_SUBMISSIONS or PENDING_SUBMISSIONS[mid]["sig"] != sig:
+        return templates.TemplateResponse("submit_result_done.html", {"request": request, "error": "Token inválido."})
 
-    # Decodificar por si llega con encoding desde el formulario
-    fecha = unquote_plus(fecha)
-    division = unquote_plus(division)
-    j1 = unquote_plus(j1)
-    j2 = unquote_plus(j2)
+    # Aquí guardas resultados en tu Excel (omitido)
+    del PENDING_SUBMISSIONS[mid]
 
-    # Normalizamos casillas vacías a ""
-    def norm(v: Optional[str]) -> str:
-        return (v or "").strip()
-
-    payload = {
-        "mid": mid,
-        "season": season,
-        "fecha": fecha,
-        "division": division,
-        "j1": j1,
-        "j2": j2,
-        "sets": [
-            [norm(s1j1), norm(s1j2)],
-            [norm(s2j1), norm(s2j2)],
-            [norm(s3j1), norm(s3j2)],
-            [norm(s4j1), norm(s4j2)],
-            [norm(s5j1), norm(s5j2)],
-        ],
-        "sender_name": norm(sender_name),
-    }
-
-    ctx = {"request": request, "title": "Resultado enviado", **payload}
-    return TEMPLATES.TemplateResponse("submit_thanks.html", ctx)
-
-
-@router.get("/submit/done", response_class=HTMLResponse)
-def submit_done(request: Request):
-    return TEMPLATES.TemplateResponse(
-        "submit_result_done.html",
-        {"request": request, "title": "Resultado guardado"}
-    )
+    return templates.TemplateResponse("submit_result_done.html", {"request": request, "ok": True})
