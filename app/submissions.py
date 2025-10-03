@@ -6,9 +6,9 @@ import hashlib
 from typing import Optional
 
 from fastapi import APIRouter, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from urllib.parse import unquote_plus
+from urllib.parse import unquote_plus, urlencode
 
 # ---------------------------------------------------------------------
 # Config
@@ -20,7 +20,7 @@ TEMPLATES = Jinja2Templates(directory="app/templates")
 # Temporada activa por defecto (se puede sobreescribir por querystring)
 ACTIVE_SEASON = os.getenv("ACTIVE_SEASON", "Temporada 5")
 
-# Secreto para firmar/enlazar envíos (no cambiamos nada aquí)
+# Secreto para firmar/enlazar envíos
 SUBMIT_SECRET = os.getenv("SUBMIT_SECRET", "PLEASE_SET_SUBMIT_SECRET")
 
 # Router para enganchar desde app.main
@@ -44,6 +44,37 @@ def check_sig(mid: str, sig: str) -> bool:
         return False
 
 
+def build_submit_link(
+    base_url: str,
+    *,
+    season: str,
+    fecha: str,
+    division: str,
+    j1: str,
+    j2: str,
+    mid: str,
+) -> str:
+    """
+    Construye el enlace /submit firmado que usa el bot en Telegram.
+
+    base_url: por ejemplo "https://pp-consulta.onrender.com"
+    """
+    base = base_url.rstrip("/")
+    sig = _hexdigest(mid)
+    qs = urlencode(
+        {
+            "mid": mid,
+            "sig": sig,
+            "fecha": fecha,
+            "division": division,
+            "j1": j1,
+            "j2": j2,
+            "season": season,
+        }
+    )
+    return f"{base}/submit?{qs}"
+
+
 # ---------------------------------------------------------------------
 # Vistas
 # ---------------------------------------------------------------------
@@ -61,10 +92,8 @@ def submit_get(
 ):
     """
     Muestra el formulario para introducir el resultado de un partido.
-
-    CAMBIO MINIMO:
-      - Decodificamos parámetros (unquote_plus) para que NO aparezca %20.
-      - El H1 ahora es "Introducir resultado" (sin repetir fecha/división).
+    - Decodificamos parámetros (unquote_plus) para que NO aparezca %20.
+    - El H1 ahora es "Introducir resultado" (sin repetir fecha/división).
     """
     if not check_sig(mid, sig):
         raise HTTPException(status_code=403, detail="Enlace inválido")
@@ -146,16 +175,9 @@ def submit_post(
         "sender_name": norm(sender_name),
     }
 
-    # Aquí NO cambiamos tu sistema de persistencia/aprobación.
-    # Si ya tienes lógica de "pendientes" / admin review en otra ruta,
-    # renderizamos la pantalla de "gracias" con los datos.
     ctx = {"request": request, "title": "Resultado enviado", **payload}
     return TEMPLATES.TemplateResponse("submit_thanks.html", ctx)
 
-
-# ---------------------------------------------------------------------
-# (Opcional) Ruta de confirmación si ya la usas en tu flujo
-# ---------------------------------------------------------------------
 
 @router.get("/submit/done", response_class=HTMLResponse)
 def submit_done(request: Request):
