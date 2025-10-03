@@ -1,359 +1,216 @@
-# -*- coding: utf-8 -*-
-"""
-Bot de partidos (opción A):
-- Se ejecuta en local.
-- Lee RESULTADOS T5.xlsx de la raíz del repo.
-- Deduce la división comparando nombres con JUGADORES T5.xlsx.
-- Construye enlaces a /submit del servicio en Render (RENDER_BASE_URL).
-- Envía dos mensajes al grupo de Telegram:
-  1) PARTIDOS RETRASADOS (sin jugar, fecha < hoy)
-  2) PARTIDOS DE HOY (sin jugar, fecha == hoy)
-- Formato de línea: "YYYY-MM-DD - División - J1 vs J2 - <a href='...'>Introducir resultado</a>"
-"""
-
+# app/bot_matches.py
 from __future__ import annotations
-
-import argparse
 import os
 import sys
-from dataclasses import dataclass
-from datetime import datetime, date
+import time
+import argparse
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
+import requests
 from dotenv import load_dotenv
 
-# NOTE: El envío a Telegram usa la librería "python-telegram-bot" v13 (sin asyncio)
-# Si prefieres "telegram" de "python-telegram-bot", este import funciona:
-from telegram import Bot  # type: ignore
+# --- Cargar .env desde app/ (solo para el bot) ---
+THIS_DIR = Path(__file__).resolve().parent
+load_dotenv(THIS_DIR / ".env")  # TELEGRAM_* y PUBLIC_BASE_URL aquí
 
-# Import interno para construir enlaces firmados a /submit en Render
-from .submissions import build_submit_link
+# --- Config ---
+ACTIVE_SEASON = os.getenv("ACTIVE_SEASON", "Temporada 5")
+# Excels están en la raíz del repo (un nivel arriba de /app)
+BASE_DIR = Path(__file__).resolve().parent.parent
+RESULTS_XLSX = BASE_DIR / f"RESULTADOS T{ACTIVE_SEASON.split()[-1]}.xlsx"
+PLAYERS_XLSX = BASE_DIR / f"JUGADORES T{ACTIVE_SEASON.split()[-1]}.xlsx"
 
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# --------------------------------------------------------------------------------------
-# Rutas y configuración
-# --------------------------------------------------------------------------------------
-
-APP_DIR = Path(__file__).resolve().parent
-ROOT_DIR = APP_DIR.parent  # raíz del proyecto (donde viven los Excel)
-# .env dentro de app/ (como en tu proyecto)
-load_dotenv(APP_DIR / ".env")
-
-# Variables de entorno
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-# Base URL del servicio en Render (requerida para construir los enlaces que se envían)
-RENDER_BASE_URL = os.getenv("RENDER_BASE_URL", "").rstrip("/")
-
-# Ficheros de datos (en la raíz)
-RESULTADOS_XLSX = ROOT_DIR / "RESULTADOS T5.xlsx"
-JUGADORES_XLSX = ROOT_DIR / "JUGADORES T5.xlsx"
-
-# Validación mínima de entorno (no abortamos del todo: el bot puede imprimir por consola)
-def _warn_env():
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Falta TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en app/.env (se imprimirá por consola).")
-    if not RENDER_BASE_URL:
-        print("⚠️ Falta RENDER_BASE_URL en app/.env (no se podrán construir enlaces correctos a Render).")
+# Usamos el generador de enlaces del router de envíos
+# (/submit?mid=...&sig=...&fecha=...&division=...&j1=...&j2=...&season=...)
+from .submissions import build_submit_link  # :contentReference[oaicite:1]{index=1}
 
 
-# --------------------------------------------------------------------------------------
-# Modelos de datos
-# --------------------------------------------------------------------------------------
-
-@dataclass
-class Match:
-    dt: date
-    division: str
-    j1: str
-    j2: str
-    # Resultado presente si hay al menos un set con puntos; para "no jugado" exigimos que TODOS estén vacíos
-    sets: List[Tuple[Optional[int], Optional[int]]]  # [(s1j1,s1j2), (s2j1,s2j2), ...]
-
-
-# --------------------------------------------------------------------------------------
-# Utilidades
-# --------------------------------------------------------------------------------------
-
-def _to_date(x) -> Optional[date]:
-    """Convierte una celda a date o None."""
-    if pd.isna(x):
-        return None
-    if isinstance(x, datetime):
-        return x.date()
-    if isinstance(x, date):
-        return x
+# --- Utilidades parsing (coinciden con las de la web) ---
+def _is_number(x) -> bool:
     try:
-        # Si viene como string "YYYY-MM-DD" u otro formato reconocible
-        return pd.to_datetime(x).date()
+        return pd.notna(x) and str(x).strip() != "" and float(x) == float(x)
     except Exception:
+        return False
+
+def _played_row(row: pd.Series) -> bool:
+    """Hay resultado si existe algún set con tanteo numérico en ambas columnas."""
+    for j1, j2 in [(4,5), (6,7), (8,9), (10,11), (12,13)]:
+        a = row.iloc[j1] if j1 < len(row) else None
+        b = row.iloc[j2] if j2 < len(row) else None
+        if _is_number(a) and _is_number(b):
+            return True
+    return False
+
+def _excel_date_to_ymd(v) -> Optional[str]:
+    if pd.isna(v):
         return None
+    if isinstance(v, (pd.Timestamp, datetime)):
+        return v.date().isoformat()
+    try:
+        return pd.to_datetime(v).date().isoformat()
+    except Exception:
+        # último recurso: cortar “YYYY-MM-DD HH:MM”
+        s = str(v).strip()
+        for sep in ("T", " "):
+            if sep in s:
+                s = s.split(sep, 1)[0]
+        return s or None
 
-
-def _clean_name(x) -> str:
-    """Limpia un nombre (string) retirando espacios y normalizando NaN."""
-    if pd.isna(x):
-        return ""
-    s = str(x).strip()
-    return s
-
-
-def _all_sets_empty(sets: List[Tuple[Optional[int], Optional[int]]]) -> bool:
-    """Devuelve True si TODOS los sets están vacíos (ningún punto informado)."""
-    for a, b in sets:
-        if pd.notna(a) and a not in ("", None) and str(a).strip() != "":
-            return False
-        if pd.notna(b) and b not in ("", None) and str(b).strip() != "":
-            return False
-    return True
-
-
-def _read_jugadores_div_map(path: Path) -> Dict[str, str]:
+def _load_players() -> Dict[str, List[str]]:
     """
-    Lee JUGADORES T5.xlsx, asumiendo:
-      - Columna 1 => División 1
-      - Columna 2 => División 2
-      - Columna 3 => División 3 - A
-      - Columna 4 => División 3 - B (si existe)
-    Devuelve un dict nombre->division_label
+    Devuelve {'División 1': [...], 'División 2': [...], ...}
+    Leyendo columnas del Excel de jugadores (mismo criterio que la web).
     """
-    if not path.exists():
-        print(f"⚠️ No existe {path.name}, no se podrá deducir división por jugadores.")
-        return {}
-
-    # Leemos sin forzar encabezados para ser robustos
-    df = pd.read_excel(path, header=None)
-    df = df.fillna("")
-
-    div_labels = {
-        0: "División 1",
-        1: "División 2",
-        2: "División 3 - A",
-        3: "División 3 - B",
-    }
-
-    mapping: Dict[str, str] = {}
-    max_col = min(len(df.columns), 4)
-    for c in range(max_col):
-        label = div_labels.get(c)
-        if not label:
-            continue
-        col_vals = df.iloc[:, c].astype(str).str.strip()
-        for name in col_vals:
-            n = name.strip()
-            if n and n.lower() != "nan":
-                mapping[n] = label
+    mapping: Dict[str, List[str]] = {}
+    if not PLAYERS_XLSX.exists():
+        return mapping
+    df = pd.read_excel(PLAYERS_XLSX, header=None)
+    names = ["División 1", "División 2", "División 3 - A", "División 3 - B", "División 3 - C"]
+    for i, div_name in enumerate(names):
+        if i < df.shape[1]:
+            col = df.iloc[:, i].dropna().astype(str).str.strip().tolist()
+            col = [x for x in col if x and x.lower() != "nan"]
+            if col:
+                mapping[div_name] = col
     return mapping
 
+def _guess_division(j1: str, j2: str, players_by_div: Dict[str, List[str]]) -> str:
+    # ambos en la misma división
+    for div, lst in players_by_div.items():
+        if j1 in lst and j2 in lst:
+            return div
+    # si no, cualquiera que contenga a uno de los dos
+    for div, lst in players_by_div.items():
+        if j1 in lst or j2 in lst:
+            return div
+    return ""
 
-def _deduce_division(j1: str, j2: str, player2div: Dict[str, str]) -> str:
-    """Deducción simple: prioriza la división donde esté J1; si no, la de J2; si no, 'Desconocida'."""
-    d1 = player2div.get(j1, "")
-    d2 = player2div.get(j2, "")
-    if d1:
-        return d1
-    if d2:
-        return d2
-    return "Desconocida"
-
-
-# --------------------------------------------------------------------------------------
-# Lectura del Excel de RESULTADOS T5.xlsx
-# --------------------------------------------------------------------------------------
-
-def _read_resultados(path: Path, player2div: Dict[str, str]) -> List[Match]:
+def _collect_matches(today: date) -> Tuple[List[dict], List[dict]]:
     """
-    Resultado T5: Formato fijo, SIEMPRE el mismo:
-
-    Col 0: Fecha
-    Col 2: Jugador 1
-    Col 3: Jugador 2
-    Col 4: S1-J1
-    Col 5: S1-J2
-    Col 6: S2-J1
-    Col 7: S2-J2
-    Col 8: S3-J1
-    Col 9: S3-J2
-    Col 10: S4-J1
-    Col 11: S4-J2
-    Col 12: S5-J1
-    Col 13: S5-J2
+    Devuelve (retrasados, hoy) como listas de dicts:
+    {'fecha': 'YYYY-MM-DD', 'division': 'División X', 'j1': '...', 'j2': '...'}
     """
-    if not path.exists():
-        print(f"❌ No se encontró {path}")
-        return []
+    if not RESULTS_XLSX.exists():
+        return [], []
 
-    # Leemos sin encabezados para seguir el índice por posición
-    df = pd.read_excel(path, header=None)
-    rows: List[Match] = []
+    df = pd.read_excel(RESULTS_XLSX, header=None).fillna(value=pd.NA)
+    players_by_div = _load_players()
+
+    delayed: List[dict] = []
+    today_list: List[dict] = []
 
     for _, row in df.iterrows():
-        fecha = _to_date(row.iloc[0])  # Col 0
-        j1 = _clean_name(row.iloc[2])  # Col 2
-        j2 = _clean_name(row.iloc[3])  # Col 3
-
-        # Saltar filas vacías o sin jugadores
-        if not j1 and not j2:
-            continue
-        if not fecha:
-            # Si no hay fecha, no es un partido válido
+        # columnas clave
+        raw_date = row.iloc[0] if 0 < len(row) else None
+        j1 = str(row.iloc[2]).strip() if 2 < len(row) and pd.notna(row.iloc[2]) else ""
+        j2 = str(row.iloc[3]).strip() if 3 < len(row) and pd.notna(row.iloc[3]) else ""
+        if not j1 or not j2:
             continue
 
-        # Sets (5 como máximo)
-        sets: List[Tuple[Optional[int], Optional[int]]] = []
-        # Pares (4,5), (6,7), (8,9), (10,11), (12,13)
-        for base in (4, 6, 8, 10, 12):
-            if base + 1 >= len(row):
-                break
-            s_j1 = row.iloc[base]
-            s_j2 = row.iloc[base + 1]
-            # Normalizamos a enteros o None
-            try:
-                a = int(s_j1) if pd.notna(s_j1) and str(s_j1).strip() != "" else None
-            except Exception:
-                a = None
-            try:
-                b = int(s_j2) if pd.notna(s_j2) and str(s_j2).strip() != "" else None
-            except Exception:
-                b = None
-            sets.append((a, b))
-
-        division = _deduce_division(j1, j2, player2div)
-        rows.append(Match(dt=fecha, division=division, j1=j1, j2=j2, sets=sets))
-
-    return rows
-
-
-def _split_matches(matches: List[Match], today: date) -> Tuple[List[Match], List[Match]]:
-    """
-    Devuelve (retrasados_no_jugados, hoy_no_jugados)
-    - no jugado => todos los sets vacíos
-    """
-    delayed: List[Match] = []
-    today_list: List[Match] = []
-
-    for m in matches:
-        if not _all_sets_empty(m.sets):
-            # Tiene algún set informado -> no es "sin jugar"
+        ymd = _excel_date_to_ymd(raw_date)
+        if not ymd:
+            continue
+        try:
+            d = datetime.strptime(ymd, "%Y-%m-%d").date()
+        except Exception:
             continue
 
-        if m.dt < today:
-            delayed.append(m)
-        elif m.dt == today:
-            today_list.append(m)
+        # deducir división
+        division = _guess_division(j1, j2, players_by_div)
 
-    # Ordenamos por fecha y nombre para consistencia
-    delayed.sort(key=lambda x: (x.dt, x.division, x.j1, x.j2))
-    today_list.sort(key=lambda x: (x.dt, x.division, x.j1, x.j2))
+        # ¿jugado ya?
+        has_result = _played_row(row)
+
+        if not has_result and d < today:
+            delayed.append({"fecha": ymd, "division": division, "j1": j1, "j2": j2})
+        elif not has_result and d == today:
+            today_list.append({"fecha": ymd, "division": division, "j1": j1, "j2": j2})
+
+    # ordenar por fecha y luego por división/j1
+    delayed.sort(key=lambda r: (r["fecha"], r["division"], r["j1"], r["j2"]))
+    today_list.sort(key=lambda r: (r["division"], r["j1"], r["j2"]))
     return delayed, today_list
 
+def _fmt_line_with_link(match: dict) -> str:
+    # Construimos enlace firmado del router /submit
+    link = build_submit_link(
+        fecha=match["fecha"],
+        division=match["division"],
+        j1=match["j1"],
+        j2=match["j2"],
+    )  # usa PUBLIC_BASE_URL internamente  :contentReference[oaicite:2]{index=2}
+    text = f'{match["fecha"]} - {match["division"]} - {match["j1"]} vs {match["j2"]}'
+    return f'<a href="{link}">{text}</a>'
 
-# --------------------------------------------------------------------------------------
-# Mensajes y envío a Telegram
-# --------------------------------------------------------------------------------------
-
-def _fmt_line_with_link(m: Match) -> str:
-    """
-    Formato de línea:
-    YYYY-MM-DD - División - J1 vs J2 - <a href="...">Introducir resultado</a>
-    """
-    # Construimos enlace a Render con token/params
-    if not RENDER_BASE_URL:
-        # Si no hay base url, devolvemos sin link (pero indicándolo)
-        return f"{m.dt} - {m.division} - {m.j1} vs {m.j2} (sin enlace: falta RENDER_BASE_URL)"
-
-    # Usamos la temporada fija "Temporada 5" (si quieres dinámico, cámbialo)
-    submit_url = build_submit_link(
-        season="Temporada 5",
-        date=m.dt.isoformat(),
-        division=m.division,
-        j1=m.j1,
-        j2=m.j2,
-        base_url=RENDER_BASE_URL,
-    )
-
-    return f'{m.dt} - {m.division} - {m.j1} vs {m.j2} - <a href="{submit_url}">Introducir resultado</a>'
-
-
-def _build_messages(delayed: List[Match], today_list: List[Match]) -> Tuple[str, str]:
-    """Construye los dos mensajes HTML."""
-    # Retrasados
-    header1 = "📋 <b>PARTIDOS RETRASADOS</b>:\n"
-    if delayed:
-        body1 = "\n".join(_fmt_line_with_link(m) for m in delayed)
-    else:
-        body1 = "(no hay)"
-    msg1 = f"{header1}{body1}"
-
-    # Hoy
-    header2 = f"\n📅 <b>PARTIDOS DE HOY ({date.today().isoformat()})</b>:\n"
-    if today_list:
-        body2 = "\n".join(_fmt_line_with_link(m) for m in today_list)
-    else:
-        body2 = "(no hay)"
-    msg2 = f"{header2}{body2}"
-
-    return msg1, msg2
-
-
-def _send_telegram(text: str) -> None:
-    """Envía un mensaje (HTML) al chat configurado. Si faltan credenciales, lo imprime."""
+def _send_telegram(html: str) -> None:
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print(text)
+        print("⚠️ Falta TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en .env")
+        print("⚠️ Falta TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en .env")
         return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": html,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=20)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"[BOT] Error enviando a Telegram: {e}")
 
-    bot = Bot(token=TELEGRAM_TOKEN)
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, parse_mode="HTML")
+def run_once(today: Optional[date] = None):
+    t = today or date.today()
+    delayed, today_list = _collect_matches(t)
 
-
-# --------------------------------------------------------------------------------------
-# Flujo principal
-# --------------------------------------------------------------------------------------
-
-def run_once(dry_run: bool = False) -> None:
-    _warn_env()
-
-    if not RESULTADOS_XLSX.exists():
-        print(f"❌ No se encontró el Excel de resultados: {RESULTADOS_XLSX}")
-        return
-
-    # Construimos mapa jugador->división con JUGADORES T5.xlsx
-    player2div = _read_jugadores_div_map(JUGADORES_XLSX)
-
-    # Cargamos partidos de RESULTADOS T5.xlsx
-    all_matches = _read_resultados(RESULTADOS_XLSX, player2div)
-
-    # Particionamos en retrasados (sin jugar) y hoy (sin jugar)
-    delayed, today_list = _split_matches(all_matches, today=date.today())
-
-    # Construimos los mensajes
-    msg1, msg2 = _build_messages(delayed, today_list)
-
-    # Enviamos o imprimimos
-    if dry_run or not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print(msg1)
-        print(msg2)
+    # mensaje 1: retrasados
+    if delayed:
+        lines = "\n".join(_fmt_line_with_link(m) for m in delayed)
     else:
-        _send_telegram(msg1)
-        _send_telegram(msg2)
+        lines = "(no hay)"
+    msg1 = f"📋 <b>PARTIDOS RETRASADOS</b>:\n{lines}"
+    print(msg1)
+    _send_telegram(msg1)
 
+    # mensaje 2: hoy
+    header = f"📅 <b>PARTIDOS DE HOY ({t.isoformat()})</b>:\n"
+    if today_list:
+        lines2 = "\n".join(_fmt_line_with_link(m) for m in today_list)
+    else:
+        lines2 = "(no hay)"
+    msg2 = header + lines2
+    print(msg2)
+    _send_telegram(msg2)
+
+def run_scheduler():
+    # programa lun-jue a las 09:00
+    import schedule
+    schedule.every().monday.at("09:00").do(run_once)
+    schedule.every().tuesday.at("09:00").do(run_once)
+    schedule.every().wednesday.at("09:00").do(run_once)
+    schedule.every().thursday.at("09:00").do(run_once)
+
+    print("[BOT] Scheduler activo (lun-jue 09:00). CTRL+C para salir.")
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
 
 def main():
-    parser = argparse.ArgumentParser(description="Bot de partidos (opción A: enlaces a Render).")
-    parser.add_argument("--once", action="store_true", help="Ejecutar una vez y terminar.")
-    parser.add_argument("--dry-run", action="store_true", help="No envía a Telegram, solo imprime.")
+    parser = argparse.ArgumentParser(description="Bot de partidos de hoy y retrasados")
+    parser.add_argument("--once", action="store_true", help="Ejecutar una vez y salir")
     args = parser.parse_args()
 
     if args.once:
-        run_once(dry_run=args.dry_run)
-        return
-
-    # Si en el futuro quieres modo daemon con schedule, podrías usar 'schedule' o 'APScheduler' aquí.
-    # Por ahora, solo --once / --dry-run.
-    print("Ejecuta con --once para mandarlo ahora. (Modo daemon no implementado).")
-
+        run_once()
+    else:
+        run_scheduler()
 
 if __name__ == "__main__":
     main()

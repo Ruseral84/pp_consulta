@@ -1,110 +1,51 @@
 {% extends "base.html" %}
+{% block title %}Introducir resultado{% endblock %}
 
 {% block content %}
+<h1>Introducir resultado</h1>
 
-<h1 class="page-title">{{ title }}</h1>
+<div class="card" style="max-width:680px;margin:12px 0;padding:12px 16px;">
+  <div><strong>Fecha:</strong> {{ fecha }}</div>
+  <div><strong>División:</strong> {{ division }}</div>
+  <div><strong>Partido:</strong> {{ j1 }} vs {{ j2 }}</div>
+</div>
 
-<p class="subtitle" style="margin-top:-0.25rem; opacity:.9;">
-  {{ fecha }} — {{ division }}
-</p>
-
-<h2 class="match-title" style="margin: 1rem 0 1.25rem 0;">
-  {{ j1 }} <span class="vs" style="opacity:.7;">vs</span> {{ j2 }}
-</h2>
-
-<form action="/submit" method="post" class="form">
-  <!-- ocultos para re-post -->
-  <input type="hidden" name="mid" value="{{ mid }}">
-  <input type="hidden" name="sig" value="{{ sig }}">
+<form method="post" action="/submit">
+  <!-- Identificadores ocultos -->
+  <input type="hidden" name="season" value="{{ season }}">
   <input type="hidden" name="fecha" value="{{ fecha }}">
   <input type="hidden" name="division" value="{{ division }}">
   <input type="hidden" name="j1" value="{{ j1 }}">
   <input type="hidden" name="j2" value="{{ j2 }}">
-  <input type="hidden" name="season" value="{{ season }}">
+  <input type="hidden" name="mid" value="{{ mid }}">
+  <input type="hidden" name="sig" value="{{ sig }}">
 
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-4" style="max-width:720px;">
-    <!-- Set 1 -->
-    <label class="field">
-      <span>S1 – {{ j1 }}</span>
-      <input name="s1j1" type="number" inputmode="numeric" min="0" class="input">
-    </label>
-    <label class="field">
-      <span>S1 – {{ j2 }}</span>
-      <input name="s1j2" type="number" inputmode="numeric" min="0" class="input">
-    </label>
+  <fieldset style="margin:16px 0;">
+    <legend>Marcadores por set</legend>
+    <div class="grid-sets">
+      {% for i in range(1,6) %}
+      <div class="set-row">
+        <label>Set {{ i }}</label>
+        <input type="number" name="s{{ i }}_j1" min="0" step="1" placeholder="J1">
+        <span class="sep">-</span>
+        <input type="number" name="s{{ i }}_j2" min="0" step="1" placeholder="J2">
+      </div>
+      {% endfor %}
+    </div>
+  </fieldset>
 
-    <!-- Set 2 -->
-    <label class="field">
-      <span>S2 – {{ j1 }}</span>
-      <input name="s2j1" type="number" inputmode="numeric" min="0" class="input">
-    </label>
-    <label class="field">
-      <span>S2 – {{ j2 }}</span>
-      <input name="s2j2" type="number" inputmode="numeric" min="0" class="input">
-    </label>
-
-    <!-- Set 3 -->
-    <label class="field">
-      <span>S3 – {{ j1 }}</span>
-      <input name="s3j1" type="number" inputmode="numeric" min="0" class="input">
-    </label>
-    <label class="field">
-      <span>S3 – {{ j2 }}</span>
-      <input name="s3j2" type="number" inputmode="numeric" min="0" class="input">
-    </label>
-
-    <!-- Set 4 -->
-    <label class="field">
-      <span>S4 – {{ j1 }}</span>
-      <input name="s4j1" type="number" inputmode="numeric" min="0" class="input">
-    </label>
-    <label class="field">
-      <span>S4 – {{ j2 }}</span>
-      <input name="s4j2" type="number" inputmode="numeric" min="0" class="input">
-    </label>
-
-    <!-- Set 5 -->
-    <label class="field">
-      <span>S5 – {{ j1 }}</span>
-      <input name="s5j1" type="number" inputmode="numeric" min="0" class="input">
-    </label>
-    <label class="field">
-      <span>S5 – {{ j2 }}</span>
-      <input name="s5j2" type="number" inputmode="numeric" min="0" class="input">
-    </label>
-
-    <!-- Nombre opcional -->
-    <label class="field md:col-span-2">
-      <span>Tu nombre (opcional)</span>
-      <input name="sender_name" type="text" class="input" placeholder="Para identificar quién ha enviado el resultado">
-    </label>
+  <div style="margin:16px 0;">
+    <label for="observaciones">Observaciones (opcional):</label>
+    <textarea id="observaciones" name="observaciones" rows="3" style="width:100%;"></textarea>
   </div>
 
-  <div style="margin-top:1rem;">
-    <button class="btn-primary" type="submit">Enviar</button>
-  </div>
+  <button type="submit">Enviar resultado</button>
 </form>
 
 <style>
-  .form .field { display:flex; flex-direction:column; gap:.35rem; }
-  .form .field span { font-size:.95rem; opacity:.9; }
-  .input {
-    width: 100%;
-    padding: .6rem .8rem;
-    background: #101317;
-    border: 1px solid rgba(255,255,255,.08);
-    border-radius: .6rem;
-    color: #fff;
-  }
-  .btn-primary {
-    padding: .65rem 1.15rem;
-    background: #2563eb;
-    color: #fff;
-    border: none;
-    border-radius: .65rem;
-    cursor: pointer;
-  }
-  .btn-primary:hover { filter: brightness(1.06); }
+  .grid-sets { display: grid; gap: 8px; }
+  .set-row { display:flex; align-items:center; gap:8px; }
+  .set-row input { width: 72px; text-align:center; }
+  .sep { display:inline-block; width:18px; text-align:center; }
 </style>
-
 {% endblock %}

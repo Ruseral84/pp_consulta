@@ -1,41 +1,55 @@
 {% extends "base.html" %}
+{% block title %}Revisión de envíos{% endblock %}
+
 {% block content %}
-<h2>Pendientes de revisión</h2>
-{% if subs|length == 0 %}
-<p>No hay envíos pendientes.</p>
-{% else %}
-<table class="table-auto w-full mt-3">
+<h1>Revisión de envíos</h1>
+
+{% if items and items|length > 0 %}
+<table class="table">
   <thead>
     <tr>
-      <th>ID</th><th>Fecha</th><th>División</th><th>Partido</th><th>Sets</th><th>Enviado</th><th>Acciones</th>
+      <th>Fecha</th>
+      <th>División</th>
+      <th>Partido</th>
+      <th>Sets</th>
+      <th>Acción</th>
     </tr>
   </thead>
   <tbody>
-    {% for s in subs %}
+    {% for it in items %}
     <tr>
-      <td>{{ s.id }}</td>
-      <td>{{ s.fecha }}</td>
-      <td>{{ s.division }}</td>
-      <td>{{ s.j1 }} vs {{ s.j2 }}</td>
-      <td>
-        S1({{s.s1j1}}–{{s.s1j2}}),
-        S2({{s.s2j1}}–{{s.s2j2}}),
-        S3({{s.s3j1}}–{{s.s3j2}}),
-        S4({{s.s4j1}}–{{s.s4j2}}),
-        S5({{s.s5j1}}–{{s.s5j2}})
+      <td style="text-align:center;">{{ it.fecha }}</td>
+      <td style="text-align:center;">{{ it.division }}</td>
+      <td>{{ it.j1 }} vs {{ it.j2 }}</td>
+      <td style="text-align:center;">
+        {# pinta solo los sets rellenados #}
+        {% set sets = [] %}
+        {% for i in range(1,6) %}
+          {% set a = attribute(it, 's' ~ i ~ '_j1') %}
+          {% set b = attribute(it, 's' ~ i ~ '_j2') %}
+          {% if a is not none and b is not none and a != '' and b != '' %}
+            {% set _ = sets.append(a ~ '-' ~ b) %}
+          {% endif %}
+        {% endfor %}
+        {{ sets|join(', ') }}
       </td>
-      <td>{{ s.submitted_at }}{% if s.submitted_by %} — {{ s.submitted_by }}{% endif %}</td>
-      <td class="space-x-2">
-        <form method="post" action="/admin/approve/{{ s.id }}" style="display:inline">
-          <button class="px-2 py-1 bg-green-600 text-white rounded">Aprobar</button>
-        </form>
-        <form method="post" action="/admin/reject/{{ s.id }}" style="display:inline">
-          <button class="px-2 py-1 bg-red-600 text-white rounded">Rechazar</button>
-        </form>
+      <td style="text-align:center;">
+        <a class="btn" href="/admin/approve?id={{ it.id }}">Aprobar</a>
+        <a class="btn btn--danger" href="/admin/reject?id={{ it.id }}">Rechazar</a>
       </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+{% else %}
+<p>No hay envíos pendientes.</p>
 {% endif %}
+
+<style>
+  .table { width:100%; border-collapse:separate; border-spacing:0 6px;}
+  .table th, .table td { padding:10px 12px; }
+  .table thead th { text-align:center; }
+  .btn { padding:6px 10px; border:1px solid #ccc; border-radius:6px; text-decoration:none; }
+  .btn--danger { border-color:#d33; color:#d33; }
+</style>
 {% endblock %}
