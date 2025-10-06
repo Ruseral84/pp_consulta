@@ -1,55 +1,43 @@
 {% extends "base.html" %}
+
 {% block title %}Revisión de envíos{% endblock %}
 
 {% block content %}
-<h1>Revisión de envíos</h1>
+<h1 class="mb-6">Revisión de envíos</h1>
 
 {% if items and items|length > 0 %}
-<table class="table">
-  <thead>
-    <tr>
-      <th>Fecha</th>
-      <th>División</th>
-      <th>Partido</th>
-      <th>Sets</th>
-      <th>Acción</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for it in items %}
-    <tr>
-      <td style="text-align:center;">{{ it.fecha }}</td>
-      <td style="text-align:center;">{{ it.division }}</td>
-      <td>{{ it.j1 }} vs {{ it.j2 }}</td>
-      <td style="text-align:center;">
-        {# pinta solo los sets rellenados #}
-        {% set sets = [] %}
-        {% for i in range(1,6) %}
-          {% set a = it['s' ~ i ~ '_j1'] %}
-          {% set b = it['s' ~ i ~ '_j2'] %}
-          {% if a is not none and b is not none and a != '' and b != '' %}
-            {% set _ = sets.append(a ~ '-' ~ b) %}
-          {% endif %}
+  <div class="table-responsive">
+    <table class="table table-dark table-hover align-middle">
+      <thead>
+        <tr>
+          <th>Fecha</th>
+          <th>División</th>
+          <th>Partido</th>
+          <th>Sets</th>
+          <th>Acción</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for it in items %}
+          <tr>
+            <td>{{ it.date }}</td>
+            <td>{{ it.division }}</td>
+            <td>{{ it.j1 }} vs {{ it.j2 }}</td>
+            <td>{{ it.sets_display }}</td>
+            <td>
+              <!-- AÑADIMOS EL TOKEN EN LOS DOS ENLACES -->
+              <a class="btn btn-outline-light btn-sm"
+                 href="/admin/approve?id={{ it.id }}&token={{ token }}">Aprobar</a>
+              <a class="btn btn-outline-danger btn-sm ms-2"
+                 href="/admin/reject?id={{ it.id }}&token={{ token }}">Rechazar</a>
+            </td>
+          </tr>
         {% endfor %}
-        {{ sets|join(', ') }}
-      </td>
-      <td style="text-align:center;">
-        <a class="btn" href="/admin/approve?id={{ it.id }}">Aprobar</a>
-        <a class="btn btn--danger" href="/admin/reject?id={{ it.id }}">Rechazar</a>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+      </tbody>
+    </table>
+  </div>
 {% else %}
-<p>No hay envíos pendientes.</p>
+  <p>No hay resultados pendientes de aprobación.</p>
 {% endif %}
 
-<style>
-  .table { width:100%; border-collapse:separate; border-spacing:0 6px;}
-  .table th, .table td { padding:10px 12px; }
-  .table thead th { text-align:center; }
-  .btn { padding:6px 10px; border:1px solid #ccc; border-radius:6px; text-decoration:none; }
-  .btn--danger { border-color:#d33; color:#d33; }
-</style>
 {% endblock %}
