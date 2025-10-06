@@ -5,7 +5,7 @@ import json
 import os
 from hashlib import sha256
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict
 
 from fastapi import APIRouter, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -16,14 +16,9 @@ from urllib.parse import quote_plus, unquote_plus
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-# Misma clave en bot y servidor (si usas firma)
+# Misma clave en bot y servidor (si lo usas con firma)
 SUBMIT_SECRET = os.getenv("SUBMIT_SECRET", "devsecret")
-
-# Moderación
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "devadmin")
-
 PENDING_FILE = BASE_DIR / "pending_submissions.json"
-APPROVED_FILE = BASE_DIR / "approved_submissions.json"
 
 # ---------- Utilidades de firma ----------
 FIELD_ORDER = ("mid", "season", "date", "division", "j1", "j2")
@@ -65,7 +60,7 @@ def build_submit_link(
 ) -> str:
     """
     Construye una URL firmada (ruta /submit). Úsala en el bot cuando
-    decidas migrar a enlaces con firma (compatible con /submit-result).
+    decidas migrar a enlaces con firma.
     """
     params = {"mid": mid, "season": season, "date": date, "division": division, "j1": j1, "j2": j2}
     sig = _make_sig(params)
@@ -115,20 +110,8 @@ def _decoded_ctx(params: Dict[str, str]) -> Dict[str, str]:
     }
 
 
-def _load_json(path: Path) -> List[Dict[str, Any]]:
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
-
-
-def _save_json(path: Path, data: List[Dict[str, Any]]) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 # --------- Rutas OFICIALES (/submit) ---------
+
 @router.get("/submit", response_class=HTMLResponse)
 def submit_get(
     request: Request,
@@ -187,9 +170,14 @@ async def submit_post(
         "submitter": submitter,
     }
 
-    existing = _load_json(PENDING_FILE)
+    existing = []
+    if PENDING_FILE.exists():
+        try:
+            existing = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            existing = []
     existing.append(record)
-    _save_json(PENDING_FILE, existing)
+    PENDING_FILE.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return TEMPLATES.TemplateResponse(
         "submit_result_done.html",
@@ -199,9 +187,11 @@ async def submit_post(
 
 # --------- Rutas LEGACY (/submit-result) ---------
 # Aceptan los nombres antiguos (id/fecha/div) y enlaces sin firma.
+
 @router.get("/submit-result", response_class=HTMLResponse)
 def submit_result_get_legacy(request: Request):
     params = _norm_qs(request)
+    # Si el enlace incluye firma, se verifica; si no, se acepta (compatibilidad)
     sig = params.pop("sig", "")
     if sig:
         _verify_sig(params, sig)
@@ -212,6 +202,7 @@ def submit_result_get_legacy(request: Request):
 @router.post("/submit-result", response_class=HTMLResponse)
 async def submit_result_post_legacy(request: Request):
     form = await request.form()
+    # Normaliza claves de formulario legacy -> oficiales
     mid = form.get("mid") or form.get("id") or ""
     season = form.get("season") or ""
     date = form.get("date") or form.get("fecha") or ""
@@ -220,6 +211,7 @@ async def submit_result_post_legacy(request: Request):
     j2 = form.get("j2") or ""
     sig = form.get("sig", "")
 
+    # sets
     def g(k: str) -> str:
         return form.get(k, "")
 
@@ -239,95 +231,16 @@ async def submit_result_post_legacy(request: Request):
         "submitter": form.get("submitter", ""),
     }
 
-    existing = _load_json(PENDING_FILE)
+    existing = []
+    if PENDING_FILE.exists():
+        try:
+            existing = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            existing = []
     existing.append(record)
-    _save_json(PENDING_FILE, existing)
+    PENDING_FILE.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return TEMPLATES.TemplateResponse(
         "submit_result_done.html",
         {"request": request, **_decoded_ctx({**params, "sig": sig})},
     )
-
-
-# ==========================
-# ====== ADMIN ROUTES ======
-# ==========================
-def _require_admin(request: Request) -> None:
-    token = request.query_params.get("token") or request.headers.get("x-admin-token") or ""
-    if token != ADMIN_TOKEN:
-        raise HTTPException(status_code=401, detail="Token inválido")
-
-
-def _flatten_item(it: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Convierte el registro (que guarda sets como dict) al formato que
-    espera admin_review.html: s1_j1, s1_j2, ...
-    También soporta registros viejos que ya vinieran aplanados.
-    """
-    out = {
-        "id": it.get("mid", ""),
-        "fecha": it.get("date", ""),
-        "division": it.get("division", ""),
-        "j1": it.get("j1", ""),
-        "j2": it.get("j2", ""),
-    }
-
-    sets = it.get("sets")
-    if isinstance(sets, dict):
-        for i in range(1, 6):
-            pair = sets.get(f"s{i}", ["", ""])
-            a, b = (pair + ["", ""])[:2]
-            out[f"s{i}_j1"] = a
-            out[f"s{i}_j2"] = b
-    else:
-        # Compatibilidad si ya estaba aplanado
-        for i in range(1, 6):
-            out[f"s{i}_j1"] = it.get(f"s{i}_j1", "")
-            out[f"s{i}_j2"] = it.get(f"s{i}_j2", "")
-
-    return out
-
-
-@router.get("/admin/review", response_class=HTMLResponse)
-def admin_review(request: Request):
-    _require_admin(request)
-    pending = _load_json(PENDING_FILE)
-    items = [_flatten_item(x) for x in pending]
-    return TEMPLATES.TemplateResponse(
-        "admin_review.html",
-        {"request": request, "items": items},
-    )
-
-
-@router.get("/admin/reject")
-def admin_reject(request: Request, id: str):
-    _require_admin(request)
-    pending = _load_json(PENDING_FILE)
-    pending = [x for x in pending if x.get("mid") != id]
-    _save_json(PENDING_FILE, pending)
-    # volver a la lista
-    token = request.query_params.get("token", "")
-    return RedirectResponse(url=f"/admin/review?token={quote_plus(token)}", status_code=302)
-
-
-@router.get("/admin/approve")
-def admin_approve(request: Request, id: str):
-    _require_admin(request)
-    pending = _load_json(PENDING_FILE)
-    keep: List[Dict[str, Any]] = []
-    moved: List[Dict[str, Any]] = []
-
-    for x in pending:
-        if x.get("mid") == id:
-            moved.append(x)
-        else:
-            keep.append(x)
-
-    if moved:
-        approved = _load_json(APPROVED_FILE)
-        approved.extend(moved)
-        _save_json(APPROVED_FILE, approved)
-
-    _save_json(PENDING_FILE, keep)
-    token = request.query_params.get("token", "")
-    return RedirectResponse(url=f"/admin/review?token={quote_plus(token)}", status_code=302)
