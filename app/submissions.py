@@ -4,6 +4,8 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
+import unicodedata
 from hashlib import sha256
 from pathlib import Path
 from typing import Dict, List, Any
@@ -90,7 +92,7 @@ def build_submit_link(
 
 
 def _norm_qs(request: Request) -> Dict[str, str]:
-    # Compatibilidad con /submit-result (legacy)
+    # Compat con /submit-result (legacy)
     q = request.query_params
     return {
         "mid": q.get("mid") or q.get("id") or "",
@@ -103,9 +105,7 @@ def _norm_qs(request: Request) -> Dict[str, str]:
     }
 
 
-# ==========
-# /submit
-# ==========
+# ==========  /submit  ==========
 @router.get("/submit", response_class=HTMLResponse)
 def submit_get(
     request: Request,
@@ -168,9 +168,7 @@ async def submit_post(
     return TEMPLATES.TemplateResponse("submit_result_done.html", {"request": request, **_decoded_ctx({**params, "sig": sig})})
 
 
-# ==========
-# /submit-result (legacy)
-# ==========
+# ==========  /submit-result (legacy) ==========
 @router.get("/submit-result", response_class=HTMLResponse)
 def submit_result_get_legacy(request: Request):
     params = _norm_qs(request)
@@ -259,7 +257,6 @@ def admin_reject(request: Request, id: str):
 # ===== APROBAR =====
 # ==========================
 def _season_to_results_path(season_str: str) -> Path:
-    import re
     m = re.search(r"(\d+)", season_str or "")
     if not m:
         raise HTTPException(status_code=400, detail="Temporada inválida")
@@ -274,6 +271,30 @@ def _cell_str(v: Any) -> str:
     if isinstance(v, date):
         return v.isoformat()
     return str(v or "").strip()
+
+
+def _norm_txt(s: str) -> str:
+    """minúsculas, sin diacríticos, espacios colapsados"""
+    s = str(s or "")
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower()
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _norm_date(s: str) -> str:
+    """A iso (YYYY-MM-DD) si viene con hora/variantes."""
+    from datetime import datetime
+    s = str(s or "").strip()
+    # Intentos comunes
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except Exception:
+            pass
+    # Último recurso: si ya es 'YYYY-MM-DD', quedará igual
+    return s[:10]
 
 
 def _apply_to_excel(record: Dict[str, Any]) -> None:
@@ -301,23 +322,31 @@ def _apply_to_excel(record: Dict[str, Any]) -> None:
         J2_COL = 4
         FIRST_SET_COL = 5  # E
 
-        target_row = None
-        date_str = record["date"].strip()
-        div_str = record["division"].strip()
-        j1_str = record["j1"].strip()
-        j2_str = record["j2"].strip()
+        # normalizamos lo que llega del submit
+        date_str = _norm_date(record["date"])
+        div_str = _norm_txt(record["division"])
+        j1_str = _norm_txt(record["j1"])
+        j2_str = _norm_txt(record["j2"])
 
+        target_row = None
+
+        # Recorremos TODO (no hay cabeceras)
         for r in range(1, ws.max_row + 1):
-            # si faltan jugadores, consideramos fila vacía
+            vfecha = _cell_str(ws.cell(row=r, column=FECHA_COL).value)
+            vdiv = _cell_str(ws.cell(row=r, column=DIV_COL).value)
             vj1 = _cell_str(ws.cell(row=r, column=J1_COL).value)
             vj2 = _cell_str(ws.cell(row=r, column=J2_COL).value)
+
+            # Fila vacía si faltan jugadores
             if not vj1 and not vj2:
                 continue
 
-            vfecha = _cell_str(ws.cell(row=r, column=FECHA_COL).value)
-            vdiv = _cell_str(ws.cell(row=r, column=DIV_COL).value)
-
-            if vfecha == date_str and vdiv == div_str and vj1 == j1_str and vj2 == j2_str:
+            if (
+                _norm_date(vfecha) == date_str
+                and _norm_txt(vdiv) == div_str
+                and _norm_txt(vj1) == j1_str
+                and _norm_txt(vj2) == j2_str
+            ):
                 target_row = r
                 break
 
