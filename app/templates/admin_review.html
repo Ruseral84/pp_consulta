@@ -3,41 +3,50 @@
 {% block title %}Revisión de envíos{% endblock %}
 
 {% block content %}
-<h1 class="mb-6">Revisión de envíos</h1>
+<h1 class="page-title">Revisión de envíos</h1>
 
-{% if items and items|length > 0 %}
-  <div class="table-responsive">
-    <table class="table table-dark table-hover align-middle">
-      <thead>
-        <tr>
-          <th>Fecha</th>
-          <th>División</th>
-          <th>Partido</th>
-          <th>Sets</th>
-          <th>Acción</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for it in items %}
-          <tr>
-            <td>{{ it.date }}</td>
-            <td>{{ it.division }}</td>
-            <td>{{ it.j1 }} vs {{ it.j2 }}</td>
-            <td>{{ it.sets_display }}</td>
-            <td>
-              <!-- AÑADIMOS EL TOKEN EN LOS DOS ENLACES -->
-              <a class="btn btn-outline-light btn-sm"
-                 href="/admin/approve?id={{ it.id }}&token={{ token }}">Aprobar</a>
-              <a class="btn btn-outline-danger btn-sm ms-2"
-                 href="/admin/reject?id={{ it.id }}&token={{ token }}">Rechazar</a>
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-{% else %}
-  <p>No hay resultados pendientes de aprobación.</p>
-{% endif %}
-
+<table class="table">
+  <thead>
+    <tr>
+      <th>Fecha</th>
+      <th>División</th>
+      <th>Partido</th>
+      <th>Sets</th>
+      <th>Acción</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% if items and items|length > 0 %}
+    {% for it in items %}
+      <tr>
+        <td>{{ it.fecha }}</td>
+        <td>{{ it.division }}</td>
+        <td>{{ it.j1 }} vs {{ it.j2 }}</td>
+        <td>
+          {# imprimimos solo los sets no vacíos #}
+          {% set parts = [] %}
+          {% for i in range(1,6) %}
+            {% set a = it['s' ~ i ~ '_j1'] %}
+            {% set b = it['s' ~ i ~ '_j2'] %}
+            {% if (a|default('')|string).strip() or (b|default('')|string).strip() %}
+              {% set _ = parts.append(a ~ '-' ~ b) %}
+            {% endif %}
+          {% endfor %}
+          {{ parts|join(', ') }}
+        </td>
+        <td>
+          <a class="btn btn-primary"
+             href="/admin/approve?id={{ it.id | urlencode }}&token={{ token | urlencode }}">Aprobar</a>
+          <a class="btn btn-danger"
+             href="/admin/reject?id={{ it.id | urlencode }}&token={{ token | urlencode }}">Rechazar</a>
+        </td>
+      </tr>
+    {% endfor %}
+  {% else %}
+      <tr>
+        <td colspan="5" style="text-align:center; opacity:.8;">No hay envíos pendientes.</td>
+      </tr>
+  {% endif %}
+  </tbody>
+</table>
 {% endblock %}

@@ -293,9 +293,11 @@ def admin_review(request: Request):
     _require_admin(request)
     pending = _load_json(PENDING_FILE)
     items = [_flatten_item(x) for x in pending]
+    # PASAMOS EL TOKEN AL TEMPLATE para construir los href
+    token = request.query_params.get("token", "")
     return TEMPLATES.TemplateResponse(
         "admin_review.html",
-        {"request": request, "items": items},
+        {"request": request, "items": items, "token": token},
     )
 
 
