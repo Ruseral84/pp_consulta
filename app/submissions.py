@@ -198,7 +198,13 @@ async def submit_result_post_legacy(request: Request):
 
     record = {
         **params,
-        "sets": {"s1": [g("s1_j1"), g("s1_j2")], "s2": [g("s2_j1"), g("s2_j2")], "s3": [g("s3_j1"), g("s3_j2")], "s4": [g("s4_j1"), g("s4_j2")], "s5": [g("s5_j1"), g("s5_j2")]},
+        "sets": {
+            "s1": [g("s1_j1"), g("s1_j2")],
+            "s2": [g("s2_j1"), g("s2_j2")],
+            "s3": [g("s3_j1"), g("s3_j2")],
+            "s4": [g("s4_j1"), g("s4_j2")],
+            "s5": [g("s5_j1"), g("s5_j2")],
+        },
         "submitter": form.get("submitter", ""),
     }
 
@@ -287,24 +293,74 @@ def _norm_date(s: str) -> str:
     """A iso (YYYY-MM-DD) si viene con hora/variantes."""
     from datetime import datetime
     s = str(s or "").strip()
-    # Intentos comunes
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S"):
         try:
             return datetime.strptime(s, fmt).date().isoformat()
         except Exception:
             pass
-    # Último recurso: si ya es 'YYYY-MM-DD', quedará igual
     return s[:10]
+
+
+def _looks_like_time(v: Any) -> bool:
+    """Heurística para detectar columna de hora en RESULTADOS T6."""
+    from datetime import time, datetime
+    import pandas as pd
+
+    if v is None:
+        return False
+    if isinstance(v, time):
+        return True
+    if isinstance(v, datetime):
+        return True
+    # strings tipo "09:00" / "09:00:00"
+    s = str(v).strip()
+    if not s:
+        return False
+    if ":" in s:
+        p = s.split(":")
+        if len(p) >= 2 and p[0].isdigit() and p[1].isdigit():
+            return True
+    # timestamps pandas (por si acaso)
+    if "Timestamp" in type(v).__name__:
+        return True
+    return False
+
+
+def _infer_results_layout_openpyxl(ws) -> dict:
+    """
+    Detecta si la hoja tiene columna HORA en B.
+
+    Legacy:
+      A fecha, B division, C j1, D j2, E.. sets
+
+    T6:
+      A fecha, B hora, C division, D j1, E j2, F.. sets
+    """
+    # miramos unas cuantas filas para encontrar un ejemplo en col B
+    has_time = False
+    max_check = min(ws.max_row, 20)
+    for r in range(1, max_check + 1):
+        v = ws.cell(row=r, column=2).value  # B
+        if _looks_like_time(v):
+            has_time = True
+            break
+
+    if has_time:
+        return {"FECHA": 1, "HORA": 2, "DIV": 3, "J1": 4, "J2": 5, "SETS_START": 6}
+    return {"FECHA": 1, "HORA": None, "DIV": 2, "J1": 3, "J2": 4, "SETS_START": 5}
 
 
 def _apply_to_excel(record: Dict[str, Any]) -> None:
     """
-    Formato real (sin cabeceras, una sola hoja):
-      Col A = Fecha (YYYY-MM-DD o date)
-      Col B = División
-      Col C = Jugador 1
-      Col D = Jugador 2
-      Col E..N = S1_J1, S1_J2, S2_J1, S2_J2, ..., S5_J1, S5_J2
+    Escribe los sets en la fila correspondiente del Excel de resultados.
+
+    Soporta:
+    - formato legacy (T1..T5): A fecha, B división, C J1, D J2, E.. sets
+    - formato T6 (con hora):   A fecha, B hora,     C división, D J1, E J2, F.. sets
+
+    IMPORTANTE:
+    - Para localizar la fila NO exigimos coincidencia por hora (no viene en el submit).
+    - Sí exigimos fecha + división + jugadores.
     """
     from openpyxl import load_workbook
 
@@ -316,11 +372,7 @@ def _apply_to_excel(record: Dict[str, Any]) -> None:
     try:
         ws = wb.worksheets[0]  # siempre 1 hoja
 
-        FECHA_COL = 1
-        DIV_COL = 2
-        J1_COL = 3
-        J2_COL = 4
-        FIRST_SET_COL = 5  # E
+        layout = _infer_results_layout_openpyxl(ws)
 
         # normalizamos lo que llega del submit
         date_str = _norm_date(record["date"])
@@ -332,12 +384,11 @@ def _apply_to_excel(record: Dict[str, Any]) -> None:
 
         # Recorremos TODO (no hay cabeceras)
         for r in range(1, ws.max_row + 1):
-            vfecha = _cell_str(ws.cell(row=r, column=FECHA_COL).value)
-            vdiv = _cell_str(ws.cell(row=r, column=DIV_COL).value)
-            vj1 = _cell_str(ws.cell(row=r, column=J1_COL).value)
-            vj2 = _cell_str(ws.cell(row=r, column=J2_COL).value)
+            vfecha = _cell_str(ws.cell(row=r, column=layout["FECHA"]).value)
+            vdiv = _cell_str(ws.cell(row=r, column=layout["DIV"]).value)
+            vj1 = _cell_str(ws.cell(row=r, column=layout["J1"]).value)
+            vj2 = _cell_str(ws.cell(row=r, column=layout["J2"]).value)
 
-            # Fila vacía si faltan jugadores
             if not vj1 and not vj2:
                 continue
 
@@ -354,9 +405,10 @@ def _apply_to_excel(record: Dict[str, Any]) -> None:
             raise HTTPException(status_code=400, detail="No encuentro el partido en el Excel (fecha/división/jugadores)")
 
         # Escribir sets
+        first_set_col = layout["SETS_START"]
         for i in range(1, 6):
             a, b = (record["sets"].get(f"s{i}", ["", ""]) + ["", ""])[:2]
-            c1 = FIRST_SET_COL + (i - 1) * 2
+            c1 = first_set_col + (i - 1) * 2
             c2 = c1 + 1
             ws.cell(row=target_row, column=c1).value = (a or None)
             ws.cell(row=target_row, column=c2).value = (b or None)
