@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Optional, Any
 import pandas as pd
 from datetime import datetime, timedelta, time as dtime
 
@@ -24,14 +24,11 @@ def _looks_like_time(v: Any) -> bool:
         return False
     if isinstance(v, dtime):
         return True
-    if isinstance(v, datetime):
-        return True
-    if isinstance(v, pd.Timestamp):
+    if isinstance(v, (datetime, pd.Timestamp)):
         return True
     s = str(v).strip()
     if not s:
         return False
-    # casos típicos: "09:00", "9:00", "09:00:00"
     if ":" in s:
         parts = s.split(":")
         if len(parts) >= 2 and all(p.isdigit() for p in parts[:2]):
@@ -61,7 +58,6 @@ def _infer_layout(df: pd.DataFrame) -> dict:
     Detectamos T6 si la columna 1 parece "hora" (en alguna de las primeras filas con datos).
     """
     has_time = False
-    # buscamos un ejemplo en las primeras filas para evitar nulos
     for i in range(min(len(df), 15)):
         try:
             v = df.iloc[i, 1] if df.shape[1] > 1 else None
@@ -89,7 +85,7 @@ def _played_row(row: pd.Series, sets_start: int) -> bool:
     return False
 
 
-def _tally_match(row: pd.Series, j1_idx: int, j2_idx: int, sets_start: int) -> Optional[Tuple[str, str, int, int, int, int]]:
+def _tally_match(row: pd.Series, j1_idx: int, j2_idx: int, sets_start: int):
     """
     Devuelve (j1, j2, sets1, sets2, pts1, pts2) SOLO si el partido tiene resultado (jugado).
     """
@@ -102,7 +98,6 @@ def _tally_match(row: pd.Series, j1_idx: int, j2_idx: int, sets_start: int) -> O
         return None
 
     sets1 = sets2 = pts1 = pts2 = 0
-
     pairs = [(sets_start + i, sets_start + i + 1) for i in range(0, 10, 2)]
     for j1c, j2c in pairs:
         a = row.iloc[j1c] if j1c < len(row) else None
@@ -169,7 +164,6 @@ def _excel_time_to_str(v: Any) -> str:
     s = str(v).strip()
     if not s:
         return ""
-    # si viene "09:00:00" => "09:00"
     if ":" in s:
         parts = s.split(":")
         if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
@@ -217,24 +211,61 @@ class LeagueData:
         agg_wins: Dict[str, int] = {}
 
         for season_label in self._season_names:
+            # temporada numérica
+            try:
+                season_num = int(season_label.split()[-1])
+            except Exception:
+                season_num = 999  # por si algún día cambia el formato
+
             for division in self.divisions_for(season_label):
                 table = self.season_division_table(season_label, division)
 
-                if division.startswith("División 1"):
-                    base = [34, 31, 29, 27]
+                # ==========================
+                # PUNTOS POR POSICIÓN
+                # - T1..T5: 3 divisiones (Div3 empieza en 10)
+                # - T6+:    4 divisiones (Div1 base 44/41/39/37; Div2 30; Div3 20; Div4 10)
+                # ==========================
+                if season_num <= 5:
+                    if division.startswith("División 1"):
+                        base = [34, 31, 29, 27]
 
-                    def puntos_pos(pos):
-                        if pos <= 4:
-                            return base[pos - 1]
-                        return 27 - (pos - 4)  # 26,25,24,...
+                        def puntos_pos(pos):
+                            if pos <= 4:
+                                return base[pos - 1]
+                            return 27 - (pos - 4)  # 26,25,24,...
 
-                elif division.startswith("División 2"):
-                    def puntos_pos(pos):
-                        return max(20 - (pos - 1), 0)
+                    elif division.startswith("División 2"):
+                        def puntos_pos(pos):
+                            return max(20 - (pos - 1), 0)
+
+                    else:
+                        # División 3 (incluye 3 - A / 3 - B)
+                        def puntos_pos(pos):
+                            return max(10 - (pos - 1), 0)
+
                 else:
-                    def puntos_pos(pos):
-                        return max(10 - (pos - 1), 0)
+                    if division.startswith("División 1"):
+                        base = [44, 41, 39, 37]
 
+                        def puntos_pos(pos):
+                            if pos <= 4:
+                                return base[pos - 1]
+                            return 37 - (pos - 4)  # 5º=36, 6º=35,...
+
+                    elif division.startswith("División 2"):
+                        def puntos_pos(pos):
+                            return max(30 - (pos - 1), 0)
+
+                    elif division.startswith("División 3"):
+                        def puntos_pos(pos):
+                            return max(20 - (pos - 1), 0)
+
+                    else:
+                        # División 4 (A/B) u otras futuras por debajo
+                        def puntos_pos(pos):
+                            return max(10 - (pos - 1), 0)
+
+                # Agregación
                 for idx, row in enumerate(table, start=1):
                     name = row["jugador"]
                     pts = puntos_pos(idx)
@@ -321,8 +352,13 @@ class LeagueData:
     def results_rows(self, season_label: str) -> List[dict]:
         """
         Devuelve filas con todas las claves que la plantilla puede usar.
-        Ahora incluye también:
-          - hora / time (si existe columna de hora en la temporada)
+        Incluye:
+          - date/fecha
+          - hora/time (si existe)
+          - division (deducida si falta)
+          - jugadores
+          - resumen sets
+          - sets s1..s5
         """
         df = self._load_results_for(season_label)
         if df.empty:
@@ -331,7 +367,7 @@ class LeagueData:
         layout = _infer_layout(df)
         players_by_div = self._load_players_for(season_label)
 
-        def _cell(row: pd.Series, i: int):
+        def _cell(row: pd.Series, i: Optional[int]):
             if i is None:
                 return None
             if i >= len(row):
@@ -353,25 +389,22 @@ class LeagueData:
             raw_time = _cell(row, layout["time"]) if layout["time"] is not None else None
             hora_str = _excel_time_to_str(raw_time) if layout["time"] is not None else ""
 
-            raw_div = _cell(row, layout["div"])  # puede venir vacío o como número
+            raw_div = _cell(row, layout["div"])
             j1 = (_cell(row, layout["j1"]) or "") or ""
             j2 = (_cell(row, layout["j2"]) or "") or ""
 
-            # sets (5 sets -> 10 celdas)
             ss = []
             for i in range(layout["sets_start"], layout["sets_start"] + 10):
                 ss.append(_cell(row, i))
-
             s1j1, s1j2, s2j1, s2j2, s3j1, s3j2, s4j1, s4j2, s5j1, s5j2 = ss + [None] * (10 - len(ss))
 
-            # Resumen en sets
             resumen = ""
             tall = _tally_match(row, layout["j1"], layout["j2"], layout["sets_start"])
             if tall:
                 _, _, ss1, ss2, _, _ = tall
                 resumen = f"{ss1}-{ss2}"
 
-            # Deducción de división si la celda no trae el nombre (o es numérica)
+            # división deducida si la celda no trae el nombre (o es numérica)
             division = ""
             if isinstance(raw_div, str) and raw_div and not raw_div.isdigit():
                 division = raw_div
@@ -388,7 +421,7 @@ class LeagueData:
                             break
                 division = found or ""
 
-            row_dict = {
+            rows.append({
                 "date": fecha_str,
                 "fecha": fecha_str,
                 "time": hora_str,
@@ -413,8 +446,7 @@ class LeagueData:
                 "s3j1": s3j1, "s3j2": s3j2,
                 "s4j1": s4j1, "s4j2": s4j2,
                 "s5j1": s5j1, "s5j2": s5j2,
-            }
-            rows.append(row_dict)
+            })
 
         return rows
 
@@ -428,7 +460,7 @@ class LeagueData:
 
     def _load_results_for(self, season_label: str) -> pd.DataFrame:
         if season_label not in self._results_by_season:
-            Tn = self._label_to_Tn(season_label)  # T6, T5...
+            Tn = self._label_to_Tn(season_label)
             df = None
             for ext in (".xlsx", ".xls"):
                 path = os.path.join(self.base_dir, f"RESULTADOS {Tn}{ext}")
@@ -441,10 +473,8 @@ class LeagueData:
                     if os.path.exists(path):
                         df = pd.read_excel(path, header=None)
                         break
-            if df is None:
-                self._results_by_season[season_label] = pd.DataFrame()
-            else:
-                self._results_by_season[season_label] = df.fillna(value=pd.NA)
+
+            self._results_by_season[season_label] = df.fillna(value=pd.NA) if df is not None else pd.DataFrame()
         return self._results_by_season[season_label]
 
     def _load_players_for(self, season_label: str) -> Dict[str, List[str]]:
@@ -464,14 +494,15 @@ class LeagueData:
                 if os.path.exists(path):
                     df = pd.read_excel(path, header=None)
                     break
+
         if df is None:
             self._players_by_season[season_label] = {}
             return {}
 
-        # Elegimos etiquetas según nº de columnas:
-        # - 4 cols (T5): Div1, Div2, Div3-A, Div3-B
-        # - 5+ cols (T6): Div1, Div2, Div3, Div4-A, Div4-B
-        # - 3 cols: Div1, Div2, Div3
+        # Etiquetas según columnas:
+        # - T6: 5 cols => Div1, Div2, Div3, Div4-A, Div4-B
+        # - T5: 4 cols => Div1, Div2, Div3-A, Div3-B
+        # - <4: fallback
         ncols = df.shape[1]
         if ncols >= 5:
             names = ["División 1", "División 2", "División 3", "División 4 - A", "División 4 - B"]
