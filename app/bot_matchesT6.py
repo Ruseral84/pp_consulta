@@ -113,7 +113,7 @@ def _row_is_unplayed(row: pd.Series, sets_start: int) -> bool:
 
 
 def _read_players_map(path: Path) -> Dict[str, str]:
-    df = pd.read_excel(path, sheet_name=0, header=0)
+    df = pd.read_excel(path, sheet_name=0, header=None)
     ncols = df.shape[1]
 
     if ncols >= 5:
@@ -165,7 +165,7 @@ def _fmt_line(fecha, hora, division, j1, j2):
 # Lógica principal
 # ---------------------------
 def _collect_matches(today: date) -> Tuple[List[dict], List[dict]]:
-    df = pd.read_excel(RESULTS_XLSX, sheet_name=0, header=0)
+    df = pd.read_excel(RESULTS_XLSX, sheet_name=0, header=None)
     layout = _infer_layout(df)
     pmap = _read_players_map(PLAYERS_XLSX)
 
